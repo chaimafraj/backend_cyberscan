@@ -1,7 +1,8 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import Scan, CVE
+
+from .models import Scan
 from .serializers import ScanSerializer
 from .ssh_scanner import run_sslscan, run_nmap, run_openssl
 
@@ -9,27 +10,40 @@ from .ssh_scanner import run_sslscan, run_nmap, run_openssl
 def parse_sslscan(output):
     protocols = []
     vulnerabilities = []
+
     for line in output.split('\n'):
         if 'TLSv1.0' in line and 'enabled' in line:
             protocols.append({'name': 'TLSv1.0', 'status': 'vulnerable'})
             vulnerabilities.append('TLSv1.0')
+
         if 'TLSv1.1' in line and 'enabled' in line:
             protocols.append({'name': 'TLSv1.1', 'status': 'obsolete'})
             vulnerabilities.append('TLSv1.1')
+
         if 'TLSv1.2' in line and 'enabled' in line:
             protocols.append({'name': 'TLSv1.2', 'status': 'secure'})
+
         if 'TLSv1.3' in line and 'enabled' in line:
             protocols.append({'name': 'TLSv1.3', 'status': 'secure'})
+
         if '3DES' in line or 'RC4' in line:
             vulnerabilities.append('WEAK_CIPHER')
-    return protocols, vulnerabilities
+
+    return protocols, list(set(vulnerabilities))
 
 
 def calculate_risk_score(vulnerabilities):
     score = 0.0
-    if 'TLSv1.0' in vulnerabilities: score += 3.0
-    if 'TLSv1.1' in vulnerabilities: score += 2.0
-    if 'WEAK_CIPHER' in vulnerabilities: score += 2.5
+
+    if 'TLSv1.0' in vulnerabilities:
+        score += 3.0
+
+    if 'TLSv1.1' in vulnerabilities:
+        score += 2.0
+
+    if 'WEAK_CIPHER' in vulnerabilities:
+        score += 2.5
+
     return min(round(score, 1), 10.0)
 
 
@@ -41,12 +55,24 @@ def test_api(request):
 @api_view(['GET', 'POST'])
 def scans_list(request):
 
-    # READ ALL + OPTIONAL FILTERS
+    # READ ALL
     if request.method == 'GET':
         scans = Scan.objects.all().order_by('-date_scan')
 
-        search = request.GET.get('search')
+        search = request.GET.get('search', '')
         risk = request.GET.get('risk', '').upper()
+
+        try:
+            page = int(request.GET.get('page', 1))
+            page_size = int(request.GET.get('page_size', 5))
+        except ValueError:
+            return Response(
+                {'error': 'page et page_size doivent être des nombres'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        page = max(page, 1)
+        page_size = max(page_size, 1)
 
         if search:
             scans = scans.filter(domaine__icontains=search)
@@ -54,15 +80,25 @@ def scans_list(request):
         if risk == 'HIGH':
             scans = scans.filter(score_risque_ia__gte=7)
         elif risk == 'MEDIUM':
-            scans = scans.filter(
-                score_risque_ia__gte=4,
-                score_risque_ia__lt=7
-            )
+            scans = scans.filter(score_risque_ia__gte=4, score_risque_ia__lt=7)
         elif risk == 'LOW':
             scans = scans.filter(score_risque_ia__lt=4)
 
-        serializer = ScanSerializer(scans, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        total = scans.count()
+        total_pages = max(1, (total + page_size - 1) // page_size)
+
+        start = (page - 1) * page_size
+        end = start + page_size
+
+        serializer = ScanSerializer(scans[start:end], many=True)
+
+        return Response({
+            'results': serializer.data,
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+        }, status=status.HTTP_200_OK)
 
     # CREATE / LANCER SCAN
     if request.method == 'POST':
@@ -94,20 +130,17 @@ def scans_list(request):
                 score_risque_ia=score
             )
 
-            return Response(
-                {
-                    'id': scan.id,
-                    'domaine': scan.domaine,
-                    'protocols': protocols,
-                    'vulnerabilities': vulnerabilities,
-                    'score_risque_ia': score,
-                    'sslscan_output': sslscan_output,
-                    'nmap_output': nmap_output,
-                    'openssl_output': openssl_output,
-                    'date_scan': scan.date_scan,
-                },
-                status=status.HTTP_201_CREATED
-            )
+            return Response({
+                'id': scan.id,
+                'domaine': scan.domaine,
+                'protocols': protocols,
+                'vulnerabilities': vulnerabilities,
+                'score_risque_ia': score,
+                'sslscan_output': sslscan_output,
+                'nmap_output': nmap_output,
+                'openssl_output': openssl_output,
+                'date_scan': scan.date_scan,
+            }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
             return Response(
@@ -121,54 +154,25 @@ def scan_detail(request, pk):
     try:
         scan = Scan.objects.get(pk=pk)
     except Scan.DoesNotExist:
-        return Response({'error': 'Scan introuvable'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {'error': 'Scan introuvable'},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
     if request.method == 'GET':
         serializer = ScanSerializer(scan)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     if request.method == 'PUT':
-        domaine = request.data.get('domaine', scan.domaine)
-        scan.domaine = domaine
+        scan.domaine = request.data.get('domaine', scan.domaine)
         scan.save()
+
         serializer = ScanSerializer(scan)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     if request.method == 'DELETE':
         scan.delete()
-        return Response({'message': 'Scan supprimé'}, status=status.HTTP_204_NO_CONTENT)
-
-    @api_view(['GET', 'POST'])
-    def scans_list(request):
-        if request.method == 'GET':
-            scans = Scan.objects.all().order_by('-date_scan')
-
-            search = request.GET.get('search', '')
-            risk = request.GET.get('risk', '').upper()
-            page = int(request.GET.get('page', 1))
-            page_size = int(request.GET.get('page_size', 5))
-
-            if search:
-                scans = scans.filter(domaine__icontains=search)
-
-            if risk == 'HIGH':
-                scans = scans.filter(score_risque_ia__gte=7)
-            elif risk == 'MEDIUM':
-                scans = scans.filter(score_risque_ia__gte=4, score_risque_ia__lt=7)
-            elif risk == 'LOW':
-                scans = scans.filter(score_risque_ia__lt=4)
-
-            total = scans.count()
-            total_pages = max(1, (total + page_size - 1) // page_size)
-            start = (page - 1) * page_size
-            end = start + page_size
-
-            serializer = ScanSerializer(scans[start:end], many=True)
-            return Response({
-                'results': serializer.data,
-                'total': total,
-                'page': page,
-                'page_size': page_size,
-                'total_pages': total_pages,
-            }, status=status.HTTP_200_OK)
-
+        return Response(
+            {'message': 'Scan supprimé'},
+            status=status.HTTP_204_NO_CONTENT
+        )
