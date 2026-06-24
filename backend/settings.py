@@ -55,7 +55,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'cyberapp_db',
         'USER': 'postgres',
-        'PASSWORD': 'Admin1234',  # baddel b password mta3ek
+        'PASSWORD': 'postgres',  # baddel b password mta3ek
         'HOST': '127.0.0.1',
         'PORT': '5432',
     }
