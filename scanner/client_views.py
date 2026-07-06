@@ -58,20 +58,21 @@ def clients_list(request):
     if request.method == 'POST':
         nom = request.data.get('nom')
         email = request.data.get('email')
+        username = request.data.get('username', '').strip()
 
-        if not nom or not email:
-            return Response({'error': 'Nom et email requis'}, status=400)
+        if not nom or not email or not username:
+            return Response({'error': 'Nom, username et email requis'}, status=400)
 
         if Client.objects.filter(email=email).exists():
             return Response({'error': 'Un client avec cet email existe déjà'}, status=400)
 
-        if User.objects.filter(username=email).exists():
-            return Response({'error': "Un compte utilisateur avec cet email existe déjà"}, status=400)
+        if User.objects.filter(username=username).exists():
+            return Response({'error': "Ce nom d'utilisateur est déjà utilisé"}, status=400)
 
         temp_password = generate_temp_password()
 
         user = User.objects.create_user(
-            username=email,
+            username=username,
             email=email,
             password=temp_password,
             role='client',
@@ -91,7 +92,7 @@ def clients_list(request):
                 message=(
                     f"Bonjour {nom},\n\n"
                     f"Votre compte CyberScan a été créé.\n\n"
-                    f"Email : {email}\n"
+                    f"Nom d'utilisateur : {username}\n"
                     f"Mot de passe temporaire : {temp_password}\n\n"
                     f"Merci de vous connecter et de changer votre mot de passe "
                     f"dès votre première connexion.\n\n"
