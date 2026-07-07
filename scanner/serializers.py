@@ -11,11 +11,14 @@ class CVESerializer(serializers.ModelSerializer):
 
 class ScanSerializer(serializers.ModelSerializer):
     cves = CVESerializer(many=True, read_only=True)
+    client_nom = serializers.SerializerMethodField()
 
     class Meta:
         model = Scan
-        fields = ['id', 'domaine', 'date_scan', 'resultats_ssl', 'score_risque_ia', 'cves']
+        fields = ['id', 'domaine', 'date_scan', 'resultats_ssl', 'score_risque_ia', 'cves', 'client_nom']
 
+    def get_client_nom(self, obj):
+        return obj.client.nom if obj.client else '—'
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:

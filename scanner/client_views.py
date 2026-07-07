@@ -8,7 +8,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import User, Client, Site
+from .models import User, Client, Site, Scan
 
 
 def generate_temp_password(length=10):
@@ -45,7 +45,7 @@ def clients_list(request):
                 'is_active': c.is_active,
                 'must_change_password': c.must_change_password,
                 'date_creation': c.date_creation,
-                'nb_sites': c.sites.count(),
+                'nb_sites': Scan.objects.filter(client=c).values('domaine').distinct().count(),
             })
 
         return Response({
