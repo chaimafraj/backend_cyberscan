@@ -1,34 +1,33 @@
 import os
-from rest_framework.decorators import api_view, permission_classes  # 🆕 Zidna permission_classes
+from rest_framework.decorators import api_view, permission_classes
 from django.db.models import Count, Avg
 from rest_framework.response import Response
 from rest_framework import status
 from django.core.mail import send_mail
-from django.contrib.auth.models import User  # 🆕 Import el User model mta3 Django
-from rest_framework.permissions import AllowAny, IsAuthenticated  # 🆕 Import AllowAny lil register
+from django.contrib.auth.models import User
+from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
 from .serializers import ScanSerializer
-from .ssh_scanner import run_sslscan, run_nmap, run_openssl
+from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_nuclei
 
 from .ai_module.risk_scorer import RiskScorer
 from .ai_module.recommender import VulnRecommender
 
-# Initialization mta3 el modules IA
 scorer_rf = RiskScorer()
 recommender_hf = VulnRecommender()
 
 
 # =========================================================================
-# 0. AUTHENTICATION : REGISTER USER (🆕 Salla7na el AttributeError)
+# 0. AUTHENTICATION : REGISTER USER
 # =========================================================================
 @api_view(['POST'])
-@permission_classes([AllowAny])  # Bch Angular ya3mel register 7ta lo mesh logged in
+@permission_classes([AllowAny])
 def register_user(request):
     username = request.data.get('username')
     password = request.data.get('password')
     email = request.data.get('email')
-    role = request.data.get('role', 'User')  # Role chosen men Angular dropdown
+    role = request.data.get('role', 'User')
 
     if not username or not password:
         return Response({'error': 'Username and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -36,14 +35,11 @@ def register_user(request):
     if User.objects.filter(username=username).exists():
         return Response({'error': 'Nom d’utilisateur déjà existant.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Inscription de l'utilisateur fil base
     user = User.objects.create_user(username=username, email=email, password=password)
 
-    # 💡 Note contextuelle: Ken 3andek profile table tnejjem t'sauvi el role hna kima hka:
-    # user.profile.role = role
-    # user.profile.save()
-
     return Response({'message': 'Utilisateur créé avec succès !'}, status=status.HTTP_201_CREATED)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
@@ -79,6 +75,8 @@ def dashboard_stats(request):
         "total_recommandations": total_recommandations,
         "recent_scans": serializer.data
     }, status=status.HTTP_200_OK)
+
+
 # =========================================================================
 # 2. INTERNAL UTILS : PARSER MTA3 EL DATA
 # =========================================================================
@@ -126,6 +124,7 @@ def scan_single_site(target, is_prod=True, has_money=False):
 
     nmap_result = run_nmap(target)
     openssl_result = run_openssl(target)
+    nuclei_result = run_nuclei(target)
 
     protocols, vulnerabilities = parse_sslscan(sslscan_result['raw'])
     has_weak_cipher = 'WEAK_CIPHER' in vulnerabilities
@@ -137,6 +136,11 @@ def scan_single_site(target, is_prod=True, has_money=False):
         is_prod,
         has_money
     )
+
+    nuclei_findings = nuclei_result.get('findings', []) if nuclei_result.get('success') else []
+    nuclei_critical_count = sum(1 for f in nuclei_findings if f.get('severity') in ('critical', 'high'))
+    if nuclei_critical_count > 0:
+        score_ia = min(10.0, score_ia + (nuclei_critical_count * 0.5))
 
     # ─── 🧠 Flan-T5 ───
     cves_data = []
@@ -171,6 +175,15 @@ def scan_single_site(target, is_prod=True, has_money=False):
             'recommandation_ia': solution_cipher
         })
 
+    for finding in nuclei_findings:
+        if finding.get('severity') in ('critical', 'high'):
+            cves_data.append({
+                'cve_id': finding.get('template_id', 'NUCLEI-UNKNOWN'),
+                'description': finding.get('name', 'Vulnérabilité détectée par Nuclei'),
+                'cvss_score': 9.0 if finding.get('severity') == 'critical' else 7.0,
+                'recommandation_ia': f"Vulnérabilité détectée sur {finding.get('matched_at', target)}. Consulter la documentation Nuclei template: {finding.get('template_id', '')}",
+            })
+
     return {
         'domaine': target,
         'success': True,
@@ -182,6 +195,8 @@ def scan_single_site(target, is_prod=True, has_money=False):
         'sslscan_raw': sslscan_result['raw'],
         'nmap_raw': nmap_result.get('raw', ''),
         'openssl_raw': openssl_result.get('raw', ''),
+        'nuclei_findings': nuclei_findings,
+        'nuclei_raw': nuclei_result.get('raw', ''),
     }
 
 
@@ -283,7 +298,9 @@ def scans_list(request):
                         'nmap': result['nmap_raw'],
                         'openssl': result['openssl_raw'],
                         'protocols': result['protocols'],
-                        'vulnerabilities': result['vulnerabilities']
+                        'vulnerabilities': result['vulnerabilities'],
+                        'nuclei_findings': result.get('nuclei_findings', []),
+                        'nuclei_raw': result.get('nuclei_raw', ''),
                     },
                     score_risque_ia=result['score_risque_ia'],
                     created_by=user,
@@ -344,6 +361,7 @@ def scans_list(request):
                 pass
 
         return Response({'rapport': rapport_global}, status=status.HTTP_201_CREATED)
+
 
 # =========================================================================
 # 5. SCAN DETAIL (GET / PUT / DELETE)

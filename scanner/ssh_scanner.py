@@ -1,5 +1,6 @@
 import paramiko
 import requests as req
+import json
 
 VM_HOST = "192.168.11.131"
 VM_USER = "chaima"
@@ -110,3 +111,41 @@ def run_ssllabs(target):
         return {'success': False, 'status': 'timeout', 'grade': 'N/A', 'error': 'SSL Labs API timeout'}
     except Exception as e:
         return {'success': False, 'status': 'error', 'grade': 'N/A', 'error': str(e)}
+
+
+def run_nuclei(target):
+    try:
+        url = target if target.startswith('http') else f'https://{target}'
+        ssh = get_ssh_client()
+        _, stdout, stderr = ssh.exec_command(
+            f"nuclei -u {url} -silent -jsonl -timeout 8 -no-color "
+            f"-t http/technologies/,http/exposures/,http/vulnerabilities/,http/cves/ "
+            f"-severity critical,high,medium,info -rate-limit 50",
+            timeout=120
+        )
+        raw_output = stdout.read().decode()
+        err = stderr.read().decode()
+        ssh.close()
+
+        if 'not found' in err.lower() or 'command not found' in err.lower():
+            return {'success': False, 'error': 'Nuclei non installé sur le VM', 'findings': [], 'raw': err}
+
+        findings = []
+        for line in raw_output.strip().split('\n'):
+            if not line.strip():
+                continue
+            try:
+                finding = json.loads(line)
+                findings.append({
+                    'template_id': finding.get('template-id', ''),
+                    'name': finding.get('info', {}).get('name', ''),
+                    'severity': finding.get('info', {}).get('severity', 'info'),
+                    'description': finding.get('info', {}).get('description', ''),
+                    'matched_at': finding.get('matched-at', ''),
+                })
+            except json.JSONDecodeError:
+                continue
+
+        return {'success': True, 'findings': findings, 'raw': raw_output}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'findings': [], 'raw': ''}

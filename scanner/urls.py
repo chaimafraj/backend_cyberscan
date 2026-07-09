@@ -1,4 +1,5 @@
 from django.urls import path
+from . import vuln_manuelle_views
 from . import views
 from . import auth_views
 from . import client_views
@@ -11,6 +12,11 @@ class MyTokenObtainPairView(TokenObtainPairView):
 
 
 urlpatterns = [
+# --- Vulnérabilités Manuelles ---
+    path('api/vuln-templates/', vuln_manuelle_views.vuln_templates, name='vuln_templates'),
+    path('api/scans/<int:scan_id>/vulnerabilites/', vuln_manuelle_views.vuln_manuelle_list, name='vuln_manuelle_list'),
+    path('api/vulnerabilites/<int:pk>/', vuln_manuelle_views.vuln_manuelle_detail, name='vuln_manuelle_detail'),
+
     # --- Auth Endpoints ---
     path('api/auth/register/', views.register_user, name='auth_register'),
     path('api/auth/login/', MyTokenObtainPairView.as_view(), name='token_obtain_pair'),

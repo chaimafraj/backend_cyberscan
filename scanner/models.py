@@ -86,3 +86,43 @@ class Site(models.Model):
 
     def __str__(self):
         return f"{self.domaine} ({self.client.nom})"
+
+class VulnerabiliteManuelle(models.Model):
+    TYPE_CHOICES = [
+        ('idor', 'IDOR - Insecure Direct Object Reference'),
+        ('lfi', 'LFI - Local File Inclusion'),
+        ('xss', 'XSS - Cross-Site Scripting'),
+        ('sqli', 'SQL Injection'),
+        ('csrf', 'CSRF'),
+        ('broken_auth', 'Broken Authentication'),
+        ('sensitive_data', 'Sensitive Data Exposure'),
+        ('spam', 'Spam / Abus'),
+        ('autre', 'Autre'),
+    ]
+
+    RISK_CHOICES = [
+        ('critical', 'Critique'),
+        ('high', 'Élevé'),
+        ('medium', 'Moyen'),
+        ('low', 'Faible'),
+    ]
+
+    scan = models.ForeignKey(Scan, on_delete=models.CASCADE, related_name='vulnerabilites_manuelles')
+    type_vuln = models.CharField(max_length=30, choices=TYPE_CHOICES, default='autre')
+    nom = models.CharField(max_length=255)
+    impacted_element = models.CharField(max_length=500, blank=True)
+    description = models.TextField(blank=True)
+    risk = models.CharField(max_length=20, choices=RISK_CHOICES, default='medium')
+    cvss_score = models.FloatField(default=0.0)
+    cvss_vector = models.CharField(max_length=100, blank=True)
+    priorite = models.CharField(max_length=50, blank=True)
+    complexite = models.CharField(max_length=50, blank=True)
+    technical_business_risks = models.TextField(blank=True)
+    recommandation = models.TextField(blank=True)
+    proof_of_concept = models.TextField(blank=True)
+    references = models.TextField(blank=True)
+    date_ajout = models.DateTimeField(auto_now_add=True)
+    ajoutee_par = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.nom} ({self.scan.domaine})"

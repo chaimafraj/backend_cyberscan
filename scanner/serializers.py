@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Scan, CVE, User
+from .models import Scan, CVE, User, VulnerabiliteManuelle
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
@@ -66,3 +66,45 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
             'must_change_password': must_change,
         }
         return data
+
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['role'] = user.role
+        token['username'] = user.username
+        return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+
+        must_change = False
+        if hasattr(self.user, 'client_profile'):
+            must_change = self.user.client_profile.must_change_password
+
+        data['user'] = {
+            'id': self.user.id,
+            'username': self.user.username,
+            'email': self.user.email,
+            'role': self.user.role,
+            'must_change_password': must_change,
+        }
+        return data
+
+
+class VulnerabiliteManuelleSerializer(serializers.ModelSerializer):
+    ajoutee_par_username = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VulnerabiliteManuelle
+        fields = [
+            'id', 'scan', 'type_vuln', 'nom', 'impacted_element', 'description',
+            'risk', 'cvss_score', 'cvss_vector', 'priorite', 'complexite',
+            'technical_business_risks', 'recommandation', 'proof_of_concept',
+            'references', 'date_ajout', 'ajoutee_par_username',
+        ]
+        read_only_fields = ['date_ajout']
+
+    def get_ajoutee_par_username(self, obj):
+        return obj.ajoutee_par.username if obj.ajoutee_par else '—'
