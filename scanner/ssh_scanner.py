@@ -1,6 +1,8 @@
 import paramiko
 import requests as req
 import json
+import re
+import shlex
 
 VM_HOST = "192.168.11.131"
 VM_USER = "chaima"
@@ -114,26 +116,14 @@ def run_ssllabs(target):
 
 
 def run_nuclei(target):
-    try:
-        url = target if target.startswith('http') else f'https://{target}'
-        ssh = get_ssh_client()
-        _, stdout, stderr = ssh.exec_command(
-            f"nuclei -u {url} -silent -jsonl -timeout 8 -no-color "
-            f"-t http/technologies/,http/exposures/,http/vulnerabilities/,http/cves/ "
-            f"-severity critical,high,medium,info -rate-limit 50",
-            timeout=120
-        )
-        raw_output = stdout.read().decode()
-        err = stderr.read().decode()
-        ssh.close()
-
-        if 'not found' in err.lower() or 'command not found' in err.lower():
-            return {'success': False, 'error': 'Nuclei non installé sur le VM', 'findings': [], 'raw': err}
-
+    def parse_nuclei_output(output):
         findings = []
-        for line in raw_output.strip().split('\n'):
-            if not line.strip():
+
+        for line in output.strip().splitlines():
+            line = line.strip()
+            if not line:
                 continue
+
             try:
                 finding = json.loads(line)
                 findings.append({
@@ -141,11 +131,58 @@ def run_nuclei(target):
                     'name': finding.get('info', {}).get('name', ''),
                     'severity': finding.get('info', {}).get('severity', 'info'),
                     'description': finding.get('info', {}).get('description', ''),
-                    'matched_at': finding.get('matched-at', ''),
+                    'matched_at': finding.get('matched-at') or finding.get('host', ''),
                 })
-            except json.JSONDecodeError:
                 continue
+            except json.JSONDecodeError:
+                pass
 
-        return {'success': True, 'findings': findings, 'raw': raw_output}
+            match = re.match(
+                r'^\[(?P<template>[^\]]+)\]\s+\[[^\]]+\]\s+\[(?P<severity>[^\]]+)\]\s+(?P<matched>.+)$',
+                line
+            )
+            if match:
+                template_id = match.group('template')
+                findings.append({
+                    'template_id': template_id,
+                    'name': template_id.replace('-', ' ').title(),
+                    'severity': match.group('severity').lower(),
+                    'description': line,
+                    'matched_at': match.group('matched').strip(),
+                })
+
+        return findings
+
+    try:
+        clean_target = target.strip()
+        url = clean_target if clean_target.startswith('http') else f'https://{clean_target}'
+        quoted_url = shlex.quote(url)
+        ssh = get_ssh_client()
+
+        base_command = (
+            f"nuclei -u {quoted_url} -silent -timeout 8 -no-color "
+            f"-t http/technologies/,http/exposures/,http/vulnerabilities/,http/cves/ "
+            f"-severity critical,high,medium,low,info -rate-limit 50"
+        )
+
+        _, stdout, stderr = ssh.exec_command(f"{base_command} -jsonl", timeout=120)
+        raw_output = stdout.read().decode()
+        err = stderr.read().decode()
+
+        if 'flag provided but not defined' in err.lower() and 'jsonl' in err.lower():
+            _, stdout, stderr = ssh.exec_command(f"{base_command} -json", timeout=120)
+            raw_output = stdout.read().decode()
+            err = stderr.read().decode()
+
+        ssh.close()
+
+        if 'not found' in err.lower() or 'command not found' in err.lower():
+            return {'success': False, 'error': 'Nuclei non installe sur le VM', 'findings': [], 'raw': err}
+
+        findings = parse_nuclei_output(raw_output)
+        if not findings:
+            findings = parse_nuclei_output(err)
+
+        return {'success': True, 'findings': findings, 'raw': raw_output or err}
     except Exception as e:
         return {'success': False, 'error': str(e), 'findings': [], 'raw': ''}
