@@ -85,6 +85,77 @@ def run_openssl(target):
         return {'success': False, 'error': str(e), 'raw': ''}
 
 
+def run_whatweb(target):
+    """Detect web technologies with WhatWeb running on the scanner VM."""
+    technologies = {}
+
+    try:
+        clean_target = target.strip()
+        if not clean_target:
+            return {'success': False, 'error': 'Cible WhatWeb vide', 'technologies': []}
+
+        # WhatWeb accepts either a URL or a hostname.  Quote it before it is
+        # passed to the remote shell to keep the SSH command safe.
+        url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{clean_target}'
+        command = (
+            '/home/chaima/WhatWeb/whatweb -a 3 --log-json=- --no-errors '
+            f'{shlex.quote(url)}'
+        )
+
+        ssh = get_ssh_client()
+        _, stdout, stderr = ssh.exec_command(command, timeout=120)
+        raw_output = stdout.read().decode(errors='replace')
+        err = stderr.read().decode(errors='replace')
+        exit_status = stdout.channel.recv_exit_status()
+        ssh.close()
+
+        if 'not found' in err.lower() or 'command not found' in err.lower():
+            return {'success': False, 'error': 'WhatWeb non installe sur la VM', 'technologies': []}
+
+        # --log-json=- outputs JSON records.  Ignore banners or other lines
+        # that are not valid JSON, as requested.
+        for line in raw_output.splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            records = record if isinstance(record, list) else [record]
+            for item in records:
+                if not isinstance(item, dict):
+                    continue
+                plugins = item.get('plugins', {})
+                if not isinstance(plugins, dict):
+                    continue
+                for name, data in plugins.items():
+                    if not isinstance(data, dict):
+                        data = {}
+                    technology = technologies.setdefault(name, {
+                        'name': name,
+                        'version': [],
+                        'string': [],
+                    })
+                    for field in ('version', 'string'):
+                        values = data.get(field, [])
+                        if not isinstance(values, list):
+                            values = [values]
+                        for value in values:
+                            if value not in (None, '') and value not in technology[field]:
+                                technology[field].append(value)
+
+        if exit_status != 0:
+            return {
+                'success': False,
+                'error': err.strip() or f'WhatWeb a termine avec le code {exit_status}',
+                'technologies': list(technologies.values()),
+            }
+
+        return {'success': True, 'technologies': list(technologies.values())}
+    except Exception as e:
+        error = str(e).strip() or e.__class__.__name__
+        return {'success': False, 'error': f'Erreur execution WhatWeb: {error}', 'technologies': []}
+
+
 def run_ssllabs(target):
     try:
         url = f"https://api.ssllabs.com/api/v3/analyze?host={target}&publish=off&all=done"
@@ -118,6 +189,28 @@ def run_ssllabs(target):
 def run_nuclei(target):
     def parse_nuclei_output(output):
         findings = []
+
+        # Some older Nuclei versions use -json and emit one JSON array instead
+        # of JSONL.  Handle that format before falling back to line-by-line
+        # parsing.
+        try:
+            parsed_output = json.loads(output)
+            if isinstance(parsed_output, dict):
+                parsed_output = [parsed_output]
+            if isinstance(parsed_output, list):
+                for finding in parsed_output:
+                    if not isinstance(finding, dict):
+                        continue
+                    findings.append({
+                        'template_id': finding.get('template-id', ''),
+                        'name': finding.get('info', {}).get('name', ''),
+                        'severity': finding.get('info', {}).get('severity', 'info').lower(),
+                        'description': finding.get('info', {}).get('description', ''),
+                        'matched_at': finding.get('matched-at') or finding.get('host', ''),
+                    })
+                return findings
+        except (TypeError, json.JSONDecodeError):
+            pass
 
         for line in output.strip().splitlines():
             line = line.strip()
@@ -155,34 +248,61 @@ def run_nuclei(target):
 
     try:
         clean_target = target.strip()
+        if not clean_target:
+            return {'success': False, 'error': 'Cible Nuclei vide', 'findings': [], 'raw': ''}
+
         url = clean_target if clean_target.startswith('http') else f'https://{clean_target}'
         quoted_url = shlex.quote(url)
         ssh = get_ssh_client()
 
+        # Run only the HTTP templates needed by this application.  This keeps
+        # the scan within the remote timeout instead of running every locally
+        # installed Nuclei template.
         base_command = (
-            f"nuclei -u {quoted_url} -silent -timeout 8 -no-color "
-            f"-t http/technologies/,http/exposures/,http/vulnerabilities/,http/cves/ "
-            f"-severity critical,high,medium,low,info -rate-limit 50"
+            f"timeout 90s nuclei -u {quoted_url} -silent -timeout 5 -no-color "
+            f"-t http/technologies/tech-detect.yaml,http/exposures/,http/cves/ "
+            f"-severity critical,high,medium -rate-limit 100 -c 25"
         )
 
-        _, stdout, stderr = ssh.exec_command(f"{base_command} -jsonl", timeout=120)
+        _, stdout, stderr = ssh.exec_command(f"{base_command} -jsonl", timeout=110)
         raw_output = stdout.read().decode()
         err = stderr.read().decode()
+        exit_status = stdout.channel.recv_exit_status()
 
         if 'flag provided but not defined' in err.lower() and 'jsonl' in err.lower():
-            _, stdout, stderr = ssh.exec_command(f"{base_command} -json", timeout=120)
+            _, stdout, stderr = ssh.exec_command(f"{base_command} -json", timeout=110)
             raw_output = stdout.read().decode()
             err = stderr.read().decode()
+            exit_status = stdout.channel.recv_exit_status()
 
         ssh.close()
 
+        combined_output = '\n'.join(part for part in (raw_output, err) if part)
         if 'not found' in err.lower() or 'command not found' in err.lower():
             return {'success': False, 'error': 'Nuclei non installe sur le VM', 'findings': [], 'raw': err}
 
-        findings = parse_nuclei_output(raw_output)
-        if not findings:
-            findings = parse_nuclei_output(err)
+        # Nuclei normally writes findings to stdout, but collecting both
+        # streams preserves findings from wrappers or older installations.
+        findings = parse_nuclei_output(combined_output)
+        if exit_status == 124:
+            return {
+                'success': False,
+                'error': 'Nuclei a depasse la limite de 90 secondes',
+                'findings': findings,
+                'raw': combined_output,
+            }
 
-        return {'success': True, 'findings': findings, 'raw': raw_output or err}
+        if exit_status != 0 and not findings:
+            return {
+                'success': False,
+                'error': err.strip() or f'Nuclei a termine avec le code {exit_status}',
+                'findings': [],
+                'raw': combined_output,
+            }
+
+        return {'success': True, 'findings': findings, 'raw': combined_output}
     except Exception as e:
-        return {'success': False, 'error': str(e), 'findings': [], 'raw': ''}
+        # socket.timeout and a few Paramiko exceptions stringify to an empty
+        # string.  Returning the class name makes the failure actionable.
+        error = str(e).strip() or e.__class__.__name__
+        return {'success': False, 'error': f'Erreur execution Nuclei: {error}', 'findings': [], 'raw': ''}

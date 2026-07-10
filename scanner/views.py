@@ -9,7 +9,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
 from .serializers import ScanSerializer
-from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_nuclei
+from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb
+from .nvd_client import find_cves_for_technologies
 
 from .ai_module.risk_scorer import RiskScorer
 from .ai_module.recommender import VulnRecommender
@@ -124,8 +125,18 @@ def scan_single_site(target, is_prod=True, has_money=False):
 
     nmap_result = run_nmap(target)
     openssl_result = run_openssl(target)
-    nuclei_result = run_nuclei(target)
-
+    whatweb_result = run_whatweb(target)
+    nvd_result = find_cves_for_technologies(
+        whatweb_result.get('technologies', []) if whatweb_result.get('success') else []
+    )
+    # Nuclei is intentionally disabled for the main scan pipeline.
+    nuclei_result = {
+        'success': False,
+        'error': 'Nuclei scan disabled',
+        'findings': [],
+        'raw': '',
+    }
+    print(nuclei_result)
     protocols, vulnerabilities = parse_sslscan(sslscan_result['raw'])
     has_weak_cipher = 'WEAK_CIPHER' in vulnerabilities
 
@@ -175,6 +186,29 @@ def scan_single_site(target, is_prod=True, has_money=False):
             'recommandation_ia': solution_cipher
         })
 
+    # NVD CVEs are candidate matches: WhatWeb identifies a product/version,
+    # then NVD searches its vulnerability corpus for that technology.
+    existing_cve_ids = {cve['cve_id'] for cve in cves_data}
+    for nvd_cve in nvd_result['cves']:
+        if nvd_cve['cve_id'] in existing_cve_ids:
+            continue
+        try:
+            recommendation = recommender_hf.generate_remediation(
+                nvd_cve['cve_id'], nvd_cve['description']
+            )
+        except Exception:
+            recommendation = (
+                f"Mettre a jour {', '.join(nvd_cve['technologies'])} vers une version corrigee "
+                f"et consulter l'avis NVD pour {nvd_cve['cve_id']}."
+            )
+        cves_data.append({
+            'cve_id': nvd_cve['cve_id'],
+            'description': nvd_cve['description'],
+            'cvss_score': nvd_cve['cvss_score'],
+            'recommandation_ia': recommendation,
+        })
+        existing_cve_ids.add(nvd_cve['cve_id'])
+
     for finding in nuclei_findings:
         if finding.get('severity') in ('critical', 'high'):
             cves_data.append({
@@ -197,6 +231,14 @@ def scan_single_site(target, is_prod=True, has_money=False):
         'openssl_raw': openssl_result.get('raw', ''),
         'nuclei_findings': nuclei_findings,
         'nuclei_raw': nuclei_result.get('raw', ''),
+        'nuclei_success': nuclei_result.get('success', False),
+        'nuclei_error': nuclei_result.get('error'),
+        'whatweb': whatweb_result,
+        'nvd': {
+            'success': nvd_result['success'],
+            'errors': nvd_result['errors'],
+            'cves_count': len(nvd_result['cves']),
+        },
     }
 
 
@@ -301,6 +343,22 @@ def scans_list(request):
                         'vulnerabilities': result['vulnerabilities'],
                         'nuclei_findings': result.get('nuclei_findings', []),
                         'nuclei_raw': result.get('nuclei_raw', ''),
+                        # Keep Nuclei diagnostics with the scan.  Previously a
+                        # failed SSH command was saved as empty output, which
+                        # made it indistinguishable from a scan with no hits.
+                        'nuclei_success': result.get('nuclei_success', False),
+                        'nuclei_error': result.get('nuclei_error'),
+                        # JSONField is supported by PostgreSQL, so no model
+                        # migration is required to retain WhatWeb findings.
+                        'whatweb': result.get('whatweb', {
+                            'success': False,
+                            'technologies': [],
+                        }),
+                        'nvd': result.get('nvd', {
+                            'success': True,
+                            'errors': [],
+                            'cves_count': 0,
+                        }),
                     },
                     score_risque_ia=result['score_risque_ia'],
                     created_by=user,
@@ -323,6 +381,15 @@ def scans_list(request):
                     'score_risque_ia': result['score_risque_ia'],
                     'protocols': result['protocols'],
                     'vulnerabilities': result['vulnerabilities'],
+                    'whatweb': result.get('whatweb', {
+                        'success': False,
+                        'technologies': [],
+                    }),
+                    'nvd': result.get('nvd', {
+                        'success': True,
+                        'errors': [],
+                        'cves_count': 0,
+                    }),
                     'cves_count': scan.cves.count()
                 })
             else:
