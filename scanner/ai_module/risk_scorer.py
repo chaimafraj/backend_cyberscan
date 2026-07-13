@@ -43,6 +43,6 @@ class RiskScorer:
         #test
         features = [[has_tls10, weak_cipher_flag, is_production, financial_data]]
 
-        #test mahdi
+        #test mahdi now
         predicted_score = self.model.predict(features)[0]
         return float(predicted_score)
