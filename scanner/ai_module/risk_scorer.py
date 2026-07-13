@@ -40,7 +40,7 @@ class RiskScorer:
         is_production = 1 if is_prod else 0
         financial_data = 1 if has_money else 0
 
-        #
+        #test
         features = [[has_tls10, weak_cipher_flag, is_production, financial_data]]
 
         #
