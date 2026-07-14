@@ -9,7 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
 from .serializers import ScanSerializer
-from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb
+from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_zap
 from .nvd_client import find_cves_for_technologies
 
 from .ai_module.risk_scorer import RiskScorer
@@ -109,7 +109,8 @@ def parse_sslscan(raw_output):
 # =========================================================================
 # 3. PIPELINE DE SCAN CRÉATION (SINGLE OU MULTI-SITE)
 # =========================================================================
-def scan_single_site(target, is_prod=True, has_money=False):
+def scan_single_site(target, is_prod=True, has_money=False, options=None):
+    options = options or {}
     sslscan_result = run_sslscan(target)
 
     if not sslscan_result['success']:
@@ -152,6 +153,21 @@ def scan_single_site(target, is_prod=True, has_money=False):
     nuclei_critical_count = sum(1 for f in nuclei_findings if f.get('severity') in ('critical', 'high'))
     if nuclei_critical_count > 0:
         score_ia = min(10.0, score_ia + (nuclei_critical_count * 0.5))
+
+    # ─── 🕷️ OWASP ZAP Baseline (automatique) ───
+    # ZAP est lancé automatiquement après le scan SSL, sauf désactivation
+    # explicite via options={"zap": false}.
+    zap_result = {'success': False, 'findings': [], 'raw': '', 'error': 'ZAP désactivé'}
+    if options.get("zap", True):
+        zap_result = run_zap(target)
+
+    zap_findings = zap_result.get('findings', []) if zap_result.get('success') else []
+    for finding in zap_findings:
+        risk = (finding.get('risk') or '').lower()
+        if risk == 'high':
+            score_ia = min(10.0, score_ia + 0.3)
+        elif risk == 'medium':
+            score_ia = min(10.0, score_ia + 0.3)
 
     # ─── 🧠 Flan-T5 ───
     cves_data = []
@@ -233,6 +249,10 @@ def scan_single_site(target, is_prod=True, has_money=False):
         'nuclei_raw': nuclei_result.get('raw', ''),
         'nuclei_success': nuclei_result.get('success', False),
         'nuclei_error': nuclei_result.get('error'),
+        'zap_findings': zap_findings,
+        'zap_raw': zap_result.get('raw', ''),
+        'zap_success': zap_result.get('success', False),
+        'zap_error': zap_result.get('error'),
         'whatweb': whatweb_result,
         'nvd': {
             'success': nvd_result['success'],
@@ -311,6 +331,7 @@ def scans_list(request):
 
         is_prod = request.data.get('is_production', True)
         has_money = request.data.get('has_financial_data', False)
+        options = request.data.get('options', {})
 
         target_list = urls if urls else ([single_url] if single_url else [])
         if not target_list:
@@ -330,7 +351,7 @@ def scans_list(request):
             if not target:
                 continue
 
-            result = scan_single_site(target, is_prod=is_prod, has_money=has_money)
+            result = scan_single_site(target, is_prod=is_prod, has_money=has_money, options=options)
 
             if result['success']:
                 scan = Scan.objects.create(
@@ -359,6 +380,11 @@ def scans_list(request):
                             'errors': [],
                             'cves_count': 0,
                         }),
+
+                        'zap_findings': result.get('zap_findings', []),
+                        'zap_raw': result.get('zap_raw', ''),
+                        'zap_success': result.get('zap_success', False),
+                        'zap_error': result.get('zap_error'),
                     },
                     score_risque_ia=result['score_risque_ia'],
                     created_by=user,
@@ -390,6 +416,9 @@ def scans_list(request):
                         'errors': [],
                         'cves_count': 0,
                     }),
+                    'zap_findings': result.get('zap_findings', []),
+                    'zap_success': result.get('zap_success', False),
+                    'zap_error': result.get('zap_error'),
                     'cves_count': scan.cves.count()
                 })
             else:
