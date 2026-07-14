@@ -9,7 +9,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
 from .serializers import ScanSerializer
-from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb
+from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_nuclei
 from .nvd_client import find_cves_for_technologies
 
 from .ai_module.risk_scorer import RiskScorer
@@ -129,14 +129,7 @@ def scan_single_site(target, is_prod=True, has_money=False):
     nvd_result = find_cves_for_technologies(
         whatweb_result.get('technologies', []) if whatweb_result.get('success') else []
     )
-    # Nuclei is intentionally disabled for the main scan pipeline.
-    nuclei_result = {
-        'success': False,
-        'error': 'Nuclei scan disabled',
-        'findings': [],
-        'raw': '',
-    }
-    print(nuclei_result)
+    nuclei_result = run_nuclei(target)
     protocols, vulnerabilities = parse_sslscan(sslscan_result['raw'])
     has_weak_cipher = 'WEAK_CIPHER' in vulnerabilities
 
@@ -233,6 +226,8 @@ def scan_single_site(target, is_prod=True, has_money=False):
         'nuclei_raw': nuclei_result.get('raw', ''),
         'nuclei_success': nuclei_result.get('success', False),
         'nuclei_error': nuclei_result.get('error'),
+        'nuclei_tmux_session': nuclei_result.get('tmux_session'),
+        'nuclei_result_file': nuclei_result.get('result_file'),
         'whatweb': whatweb_result,
         'nvd': {
             'success': nvd_result['success'],
@@ -348,6 +343,8 @@ def scans_list(request):
                         # made it indistinguishable from a scan with no hits.
                         'nuclei_success': result.get('nuclei_success', False),
                         'nuclei_error': result.get('nuclei_error'),
+                        'nuclei_tmux_session': result.get('nuclei_tmux_session'),
+                        'nuclei_result_file': result.get('nuclei_result_file'),
                         # JSONField is supported by PostgreSQL, so no model
                         # migration is required to retain WhatWeb findings.
                         'whatweb': result.get('whatweb', {
@@ -390,6 +387,12 @@ def scans_list(request):
                         'errors': [],
                         'cves_count': 0,
                     }),
+                    'nuclei': {
+                        'success': result.get('nuclei_success', False),
+                        'error': result.get('nuclei_error'),
+                        'tmux_session': result.get('nuclei_tmux_session'),
+                        'result_file': result.get('nuclei_result_file'),
+                    },
                     'cves_count': scan.cves.count()
                 })
             else:
