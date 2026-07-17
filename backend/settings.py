@@ -8,7 +8,8 @@ SECRET_KEY = 'django-insecure-$m*(*d*!srk)(!y3v_%anjl@0j3%(0(^d$pj#$@bepb9hnzzva
 
 DEBUG = True
 
-ALLOWED_HOSTS = []
+# localhost + testserver (Django test client / APIClient)
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]', 'testserver']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -101,6 +102,11 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# --- Médias / rapports PDF CyberScan ---
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+REPORTS_DIR = MEDIA_ROOT / 'rapports'
 
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True

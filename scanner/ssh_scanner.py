@@ -20,6 +20,25 @@ def get_ssh_client():
     return ssh
 
 
+def parse_target(target):
+    """
+    Sépare host et port si présents.
+    Retourne (host, port) où port est un int ou None si absent.
+    Gère : nom de domaine seul, IP seule, host:port, IP:port.
+    Ne pas confondre avec les IPv6 (pas de support IPv6 requis pour l'instant).
+    """
+    host = (target or '').strip()
+    port = None
+    # Une adresse IPv6 contient plusieurs ':' : on ne tente pas d'extraire un
+    # port dans ce cas (IPv6 non supporté pour l'instant).
+    if host.count(':') == 1:
+        candidate_host, _, candidate_port = host.partition(':')
+        if candidate_host and candidate_port.isdigit():
+            host = candidate_host
+            port = int(candidate_port)
+    return host, port
+
+
 def classify_error(output, target):
     """Détecte le type d'erreur précis pour le rapport"""
     out = output.lower()
@@ -34,10 +53,11 @@ def classify_error(output, target):
     return None
 
 
-def run_sslscan(target):
+def run_sslscan(target, port=None):
     try:
         ssh = get_ssh_client()
-        _, stdout, stderr = ssh.exec_command(f"sslscan --connect-timeout=10 {target}")
+        endpoint = f"{target}:{port}" if port else target
+        _, stdout, stderr = ssh.exec_command(f"sslscan --connect-timeout=10 {endpoint}")
         result = stdout.read().decode()
         err = stderr.read().decode()
         ssh.close()
@@ -53,11 +73,12 @@ def run_sslscan(target):
         return {'success': False, 'error': f'Erreur connexion VM: {str(e)}', 'raw': ''}
 
 
-def run_nmap(target):
+def run_nmap(target, port=None):
+    scan_port = port or 443
     try:
         ssh = get_ssh_client()
         _, stdout, stderr = ssh.exec_command(
-            f"nmap --script ssl-enum-ciphers -p 443 --host-timeout 15s {target}"
+            f"nmap --script ssl-enum-ciphers -p {scan_port} --host-timeout 15s {target}"
         )
         result = stdout.read().decode()
         ssh.close()
@@ -66,17 +87,18 @@ def run_nmap(target):
         if 'host seems down' in out_lower or '0 hosts up' in out_lower:
             return {'success': False, 'error': f"HÔTE INJOIGNABLE: '{target}' semble injoignable", 'raw': result}
         if 'closed' in out_lower and 'open' not in out_lower:
-            return {'success': False, 'error': f"PORT FERMÉ: 443 fermé sur '{target}'", 'raw': result}
+            return {'success': False, 'error': f"PORT FERMÉ: {scan_port} fermé sur '{target}'", 'raw': result}
         return {'success': True, 'error': None, 'raw': result}
     except Exception as e:
         return {'success': False, 'error': str(e), 'raw': ''}
 
 
-def run_openssl(target):
+def run_openssl(target, port=None):
+    connect_port = port or 443
     try:
         ssh = get_ssh_client()
         _, stdout, stderr = ssh.exec_command(
-            f"timeout 10 openssl s_client -connect {target}:443 -servername {target} </dev/null 2>&1"
+            f"timeout 10 openssl s_client -connect {target}:{connect_port} -servername {target} </dev/null 2>&1"
         )
         result = stdout.read().decode()
         ssh.close()
@@ -89,7 +111,7 @@ def run_openssl(target):
         return {'success': False, 'error': str(e), 'raw': ''}
 
 
-def run_whatweb(target):
+def run_whatweb(target, port=None):
     """Detect web technologies with WhatWeb running on the scanner VM."""
     technologies = {}
 
@@ -100,7 +122,8 @@ def run_whatweb(target):
 
         # WhatWeb accepts either a URL or a hostname.  Quote it before it is
         # passed to the remote shell to keep the SSH command safe.
-        url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{clean_target}'
+        host = clean_target if not port else f'{clean_target}:{port}'
+        url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{host}'
         command = (
             '/home/chaima/WhatWeb/whatweb -a 3 --log-json=- --no-errors '
             f'{shlex.quote(url)}'
@@ -190,7 +213,7 @@ def run_ssllabs(target):
         return {'success': False, 'status': 'error', 'grade': 'N/A', 'error': str(e)}
 
 
-def run_nuclei(target):
+def run_nuclei(target, port=None):
     def parse_nuclei_output(output):
         findings = []
 
@@ -255,7 +278,8 @@ def run_nuclei(target):
         if not clean_target:
             return {'success': False, 'error': 'Cible Nuclei vide', 'findings': [], 'raw': ''}
 
-        url = clean_target if clean_target.startswith('http') else f'https://{clean_target}'
+        host = clean_target if not port else f'{clean_target}:{port}'
+        url = clean_target if clean_target.startswith('http') else f'https://{host}'
         quoted_url = shlex.quote(url)
         ssh = get_ssh_client()
 
@@ -340,7 +364,7 @@ def _strip_html(text):
 ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy:stable"
 
 
-def run_zap(target, timeout=600):
+def run_zap(target, timeout=600, port=None):
     """Scan web passif avec OWASP ZAP (zap-baseline.py) via Docker sur la VM.
 
     Le scan baseline lance un spider puis un scan passif, puis exporte un
@@ -355,7 +379,8 @@ def run_zap(target, timeout=600):
         if not clean_target:
             return {'success': False, 'error': 'Cible ZAP vide', 'findings': [], 'raw': ''}
 
-        url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{clean_target}'
+        host = clean_target if not port else f'{clean_target}:{port}'
+        url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{host}'
         quoted_url = shlex.quote(url)
 
         ssh = get_ssh_client()

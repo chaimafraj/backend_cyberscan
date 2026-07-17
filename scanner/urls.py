@@ -3,6 +3,8 @@ from . import vuln_manuelle_views
 from . import views
 from . import auth_views
 from . import client_views
+from . import alertes_views
+from . import report_views
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from scanner.serializers import MyTokenObtainPairSerializer
 
@@ -28,7 +30,14 @@ urlpatterns = [
     path('api/test/', views.test_api),
     path('api/scans/', views.scans_list),
     path('api/scans/<int:pk>/', views.scan_detail),
+    # --- Rapports PDF (consultation + téléchargement + email) ---
+    path('api/scans/<int:pk>/rapport/', report_views.scan_rapport_detail, name='scan_rapport_detail'),
+    path('api/scans/<int:pk>/rapport/download/', report_views.scan_rapport_download, name='scan_rapport_download'),
+    path('api/scans/<int:pk>/rapport/email/', report_views.scan_rapport_email, name='scan_rapport_email'),
     path('api/dashboard-stats/', views.dashboard_stats, name='dashboard_stats'),
+
+    # --- Alertes Endpoint ---
+    path('api/alertes/', alertes_views.alertes_list, name='alertes_list'),
 
     # --- Clients Endpoints (Admin) ---
     path('api/clients/', client_views.clients_list, name='clients_list'),

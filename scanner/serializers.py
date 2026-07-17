@@ -12,13 +12,24 @@ class CVESerializer(serializers.ModelSerializer):
 class ScanSerializer(serializers.ModelSerializer):
     cves = CVESerializer(many=True, read_only=True)
     client_nom = serializers.SerializerMethodField()
+    pdf_disponible = serializers.SerializerMethodField()
+    has_rapport = serializers.SerializerMethodField()
 
     class Meta:
         model = Scan
-        fields = ['id', 'domaine', 'date_scan', 'resultats_ssl', 'score_risque_ia', 'cves', 'client_nom']
+        fields = [
+            'id', 'domaine', 'date_scan', 'resultats_ssl', 'score_risque_ia',
+            'cves', 'client_nom', 'pdf_disponible', 'has_rapport',
+        ]
 
     def get_client_nom(self, obj):
         return obj.client.nom if obj.client else '—'
+
+    def get_pdf_disponible(self, obj):
+        return obj.rapports.exists()
+
+    def get_has_rapport(self, obj):
+        return obj.rapports.exists()
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:

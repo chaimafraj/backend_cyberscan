@@ -9,8 +9,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
 from .serializers import ScanSerializer
-from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_zap
-from .nvd_client import find_cves_for_technologies
+from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_zap, parse_target
+from .nvd_service import enrich_scan_with_nvd
 
 from .ai_module.risk_scorer import RiskScorer
 from .ai_module.recommender import VulnRecommender
@@ -111,7 +111,10 @@ def parse_sslscan(raw_output):
 # =========================================================================
 def scan_single_site(target, is_prod=True, has_money=False, options=None):
     options = options or {}
-    sslscan_result = run_sslscan(target)
+    # La cible peut être un domaine, une IP, ou un format "host:port".
+    # Si un port est présent, il remplace le port 443 par défaut des outils.
+    host, port = parse_target(target)
+    sslscan_result = run_sslscan(host, port)
 
     if not sslscan_result['success']:
         return {
@@ -124,12 +127,22 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
             'cves': [],
         }
 
-    nmap_result = run_nmap(target)
-    openssl_result = run_openssl(target)
-    whatweb_result = run_whatweb(target)
-    nvd_result = find_cves_for_technologies(
-        whatweb_result.get('technologies', []) if whatweb_result.get('success') else []
-    )
+    nmap_result = run_nmap(host, port)
+    openssl_result = run_openssl(host, port)
+    whatweb_result = run_whatweb(host, port)
+
+    # ─── 🔎 API NVD (optionnelle via options={"nvd": true}) ───
+    # WhatWeb tourne toujours en amont (NVD en dépend), mais l'appel NVD
+    # lui-même ne s'exécute que si options["nvd"] est True. On enrichit à
+    # partir des technologies WhatWeb, complétées par les versions de produits
+    # repérées dans les sorties brutes Nmap / OpenSSL.
+    nvd_result = {'success': True, 'errors': [], 'cves': []}
+    if options.get("nvd", False) == True:
+        nvd_result = enrich_scan_with_nvd(
+            whatweb_result=whatweb_result,
+            nmap_raw=nmap_result.get('raw', ''),
+            openssl_raw=openssl_result.get('raw', ''),
+        )
     # Nuclei is intentionally disabled for the main scan pipeline.
     nuclei_result = {
         'success': False,
@@ -159,7 +172,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
     # explicite via options={"zap": false}.
     zap_result = {'success': False, 'findings': [], 'raw': '', 'error': 'ZAP désactivé'}
     if options.get("zap", True):
-        zap_result = run_zap(target)
+        zap_result = run_zap(host, port=port)
 
     zap_findings = zap_result.get('findings', []) if zap_result.get('success') else []
     for finding in zap_findings:
@@ -259,6 +272,9 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
             'errors': nvd_result['errors'],
             'cves_count': len(nvd_result['cves']),
         },
+        # Liste détaillée des CVE NVD (cve_id, cvss_score, severity, description,
+        # published_date) sauvegardée dans resultats_ssl["nvd_cves"].
+        'nvd_cves': nvd_result['cves'],
     }
 
 
@@ -380,6 +396,9 @@ def scans_list(request):
                             'errors': [],
                             'cves_count': 0,
                         }),
+                        # CVE détaillées issues de l'API NVD (cve_id, cvss_score,
+                        # severity, description, published_date).
+                        'nvd_cves': result.get('nvd_cves', []),
 
                         'zap_findings': result.get('zap_findings', []),
                         'zap_raw': result.get('zap_raw', ''),
@@ -399,6 +418,15 @@ def scans_list(request):
                         cvss_score=c['cvss_score'],
                         recommandation_ia=c['recommandation_ia'],
                     )
+
+                # PDF professionnel + email (pièce jointe) — n'altère pas le scan.
+                # Appelé après les CVE pour un rapport complet.
+                try:
+                    from .report_pipeline import finalize_scan_report
+                    extra_emails = [email_to] if email_to else None
+                    finalize_scan_report(scan, extra_emails=extra_emails)
+                except Exception:
+                    pass
 
                 rapport_global.append({
                     'id': scan.id,
