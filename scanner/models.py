@@ -55,6 +55,34 @@ class Rapport(models.Model):
     chemin_pdf = models.CharField(max_length=500)
     date_generation = models.DateTimeField(auto_now_add=True)
 
+
+class Notification(models.Model):
+    TYPE_CHOICES = [
+        ('scan_finished', 'Scan terminé'),
+        ('new_cve', 'Nouvelle CVE'),
+        ('high_risk', 'Risque élevé'),
+        ('report_ready', 'Rapport disponible'),
+    ]
+    NIVEAU_CHOICES = [
+        ('info', 'Info'),
+        ('warning', 'Avertissement'),
+        ('critical', 'Critique'),
+    ]
+
+    titre = models.CharField(max_length=255)
+    message = models.TextField()
+    type = models.CharField(max_length=30, choices=TYPE_CHOICES)
+    niveau = models.CharField(max_length=20, choices=NIVEAU_CHOICES, default='info')
+    lu = models.BooleanField(default=False)
+    date_creation = models.DateTimeField(auto_now_add=True)
+    scan = models.ForeignKey(Scan, on_delete=models.CASCADE, related_name='notifications')
+
+    class Meta:
+        ordering = ['-date_creation']
+
+    def __str__(self):
+        return f'{self.titre} ({self.type})'
+
 def generate_temp_password(length=10):
     alphabet = string.ascii_letters + string.digits
     return ''.join(secrets.choice(alphabet) for _ in range(length))

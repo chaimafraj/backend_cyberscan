@@ -108,6 +108,10 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 REPORTS_DIR = MEDIA_ROOT / 'rapports'
 
+# URLs publiques pour les liens dans les emails de rapport
+CYBERSCAN_SITE_URL = os.environ.get('CYBERSCAN_SITE_URL', 'http://localhost:4200')
+CYBERSCAN_API_URL = os.environ.get('CYBERSCAN_API_URL', 'http://localhost:8000')
+
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 

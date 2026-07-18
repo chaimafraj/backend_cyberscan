@@ -5,6 +5,8 @@ from . import auth_views
 from . import client_views
 from . import alertes_views
 from . import report_views
+from . import notification_views
+from . import chatbot_views
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from scanner.serializers import MyTokenObtainPairSerializer
 
@@ -34,10 +36,21 @@ urlpatterns = [
     path('api/scans/<int:pk>/rapport/', report_views.scan_rapport_detail, name='scan_rapport_detail'),
     path('api/scans/<int:pk>/rapport/download/', report_views.scan_rapport_download, name='scan_rapport_download'),
     path('api/scans/<int:pk>/rapport/email/', report_views.scan_rapport_email, name='scan_rapport_email'),
+    path('api/scans/<int:pk>/export/json/', report_views.scan_export_json, name='scan_export_json'),
+    path('api/scans/<int:pk>/export/excel/', report_views.scan_export_excel, name='scan_export_excel'),
     path('api/dashboard-stats/', views.dashboard_stats, name='dashboard_stats'),
+
+    # --- Notifications ---
+    path('api/notifications/', notification_views.notifications_list, name='notifications_list'),
+    path('api/notifications/unread-count/', notification_views.notifications_unread_count, name='notifications_unread_count'),
+    path('api/notifications/<int:pk>/read/', notification_views.notification_mark_read, name='notification_mark_read'),
+    path('api/notifications/<int:pk>/', notification_views.notification_delete, name='notification_delete'),
 
     # --- Alertes Endpoint ---
     path('api/alertes/', alertes_views.alertes_list, name='alertes_list'),
+
+    # --- Chatbot RAG (Flan-T5) ---
+    path('api/chatbot/', chatbot_views.chatbot_ask, name='chatbot_ask'),
 
     # --- Clients Endpoints (Admin) ---
     path('api/clients/', client_views.clients_list, name='clients_list'),

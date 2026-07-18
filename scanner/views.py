@@ -419,6 +419,12 @@ def scans_list(request):
                         recommandation_ia=c['recommandation_ia'],
                     )
 
+                try:
+                    from .notification_service import notify_scan_events
+                    notify_scan_events(scan)
+                except Exception:
+                    pass
+
                 # PDF professionnel + email (pièce jointe) — n'altère pas le scan.
                 # Appelé après les CVE pour un rapport complet.
                 try:

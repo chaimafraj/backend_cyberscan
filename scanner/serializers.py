@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Scan, CVE, User, VulnerabiliteManuelle
+from .models import Scan, CVE, User, VulnerabiliteManuelle, Notification
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
@@ -30,6 +30,20 @@ class ScanSerializer(serializers.ModelSerializer):
 
     def get_has_rapport(self, obj):
         return obj.rapports.exists()
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    scan_id = serializers.IntegerField(source='scan.id', read_only=True)
+    domaine = serializers.CharField(source='scan.domaine', read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = [
+            'id', 'titre', 'message', 'type', 'niveau', 'lu',
+            'date_creation', 'scan', 'scan_id', 'domaine',
+        ]
+        read_only_fields = fields
+
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
