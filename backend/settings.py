@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 from datetime import timedelta
 
+from corsheaders.defaults import default_headers
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = 'django-insecure-$m*(*d*!srk)(!y3v_%anjl@0j3%(0(^d$pj#$@bepb9hnzzva'
@@ -112,8 +114,34 @@ REPORTS_DIR = MEDIA_ROOT / 'rapports'
 CYBERSCAN_SITE_URL = os.environ.get('CYBERSCAN_SITE_URL', 'http://localhost:4200')
 CYBERSCAN_API_URL = os.environ.get('CYBERSCAN_API_URL', 'http://localhost:8000')
 
-CORS_ALLOW_ALL_ORIGINS = True
+# Frontend Angular autorise a appeler l'API Django en developpement.
+# Une origine ne contient pas de slash final.
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:4200',
+    'http://127.0.0.1:4200',
+]
+
+# Necessaire pour les requetes non sures authentifiees par cookie/CSRF.
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost:4200',
+    'http://127.0.0.1:4200',
+]
+
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = [
+    *default_headers,
+    'sec-ch-ua',
+    'sec-ch-ua-mobile',
+    'sec-ch-ua-platform',
+]
+CORS_ALLOW_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+]
 
 # --- Logging : affiche les logs du scanner (dont OWASP ZAP) dans la console ---
 LOGGING = {

@@ -19,10 +19,26 @@ class User(AbstractUser):
 
 
 class Scan(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'En attente'
+        RUNNING = 'RUNNING', 'En cours'
+        COMPLETED = 'COMPLETED', 'Termine'
+        FAILED = 'FAILED', 'Echoue'
+
     domaine = models.CharField(max_length=255)
     date_scan = models.DateTimeField(auto_now_add=True)
     resultats_ssl = models.JSONField(default=dict)
     score_risque_ia = models.FloatField(default=0.0)
+    status = models.CharField(
+        max_length=10,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    error_message = models.TextField(blank=True)
+    celery_task_id = models.CharField(max_length=255, blank=True, db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='scans'
     )

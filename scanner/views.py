@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.core.mail import send_mail
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
@@ -406,6 +407,8 @@ def scans_list(request):
                         'zap_error': result.get('zap_error'),
                     },
                     score_risque_ia=result['score_risque_ia'],
+                    status=Scan.Status.COMPLETED,
+                    completed_at=timezone.now(),
                     created_by=user,
                     client=client_for_scan,
                 )
