@@ -43,6 +43,7 @@ urlpatterns = [
     # --- Notifications ---
     path('api/notifications/', notification_views.notifications_list, name='notifications_list'),
     path('api/notifications/unread-count/', notification_views.notifications_unread_count, name='notifications_unread_count'),
+    path('api/notifications/read-all/', notification_views.notifications_mark_all_read, name='notifications_mark_all_read'),
     path('api/notifications/<int:pk>/read/', notification_views.notification_mark_read, name='notification_mark_read'),
     path('api/notifications/<int:pk>/', notification_views.notification_delete, name='notification_delete'),
 

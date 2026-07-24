@@ -3,10 +3,11 @@ from pathlib import Path
 from datetime import timedelta
 
 from corsheaders.defaults import default_headers
+from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-$m*(*d*!srk)(!y3v_%anjl@0j3%(0(^d$pj#$@bepb9hnzzva'
+SECRET_KEY = config('DJANGO_SECRET_KEY', default='django-insecure-development-only-change-me')
 
 DEBUG = True
 
@@ -169,9 +170,25 @@ LOGGING = {
 }
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'farajchaima8@gmail.com'
-EMAIL_HOST_PASSWORD = 'epjynxdelvnccfcx'
-DEFAULT_FROM_EMAIL = 'CyberScan <farajchaima8@gmail.com>'
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config(
+    'DEFAULT_FROM_EMAIL',
+    default=f'CyberScan <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'CyberScan <noreply@localhost>',
+)
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
+
+# Les scans asynchrones créent les notifications dans le worker Celery.
+CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/0')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://127.0.0.1:6379/1')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TASK_TIME_LIMIT = config('CELERY_TASK_TIME_LIMIT', default=1800, cast=int)
+CELERY_TASK_SOFT_TIME_LIMIT = config('CELERY_TASK_SOFT_TIME_LIMIT', default=1740, cast=int)

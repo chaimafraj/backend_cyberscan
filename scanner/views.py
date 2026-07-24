@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 from rest_framework.decorators import api_view, permission_classes
 from django.db.models import Count, Avg
 from rest_framework.response import Response
@@ -17,7 +18,10 @@ from .ai_module.risk_scorer import RiskScorer
 from .ai_module.recommender import VulnRecommender
 
 scorer_rf = RiskScorer()
-recommender_hf = VulnRecommender()
+@lru_cache(maxsize=1)
+def _get_recommender():
+    # Charge Flan-T5 uniquement lorsqu'une recommandation doit être générée.
+    return VulnRecommender()
 
 
 # =========================================================================
@@ -190,7 +194,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         cve_id = "CVE-2014-3566"
         desc_brute = "The SSL protocol 3.0 and TLS 1.0 use CBC mode ciphers, allowing man-in-the-middle attackers to conduct POODLE attacks."
         try:
-            solution = recommender_hf.generate_remediation(cve_id, desc_brute)
+            solution = _get_recommender().generate_remediation(cve_id, desc_brute)
         except Exception:
             solution = "Désactiver le protocole TLSv1.0 obsolète et migrer vers TLSv1.2 ou TLSv1.3."
 
@@ -205,7 +209,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         cve_id_cipher = "CVE-2016-2183"
         desc_cipher_brute = "The DES and Triple DES ciphers use a block size of 64 bits, making them vulnerable to birthday attacks (Sweet32)."
         try:
-            solution_cipher = recommender_hf.generate_remediation(cve_id_cipher, desc_cipher_brute)
+            solution_cipher = _get_recommender().generate_remediation(cve_id_cipher, desc_cipher_brute)
         except Exception:
             solution_cipher = "Désactiver les suites de chiffrement 3DES et RC4. Utiliser AES-GCM ou ChaCha20-Poly1305."
 
@@ -223,7 +227,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         if nvd_cve['cve_id'] in existing_cve_ids:
             continue
         try:
-            recommendation = recommender_hf.generate_remediation(
+            recommendation = _get_recommender().generate_remediation(
                 nvd_cve['cve_id'], nvd_cve['description']
             )
         except Exception:

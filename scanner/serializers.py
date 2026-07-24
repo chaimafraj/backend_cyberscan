@@ -3,6 +3,20 @@ from .models import Scan, CVE, User, VulnerabiliteManuelle, Notification
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
+class ChatbotRequestSerializer(serializers.Serializer):
+    question = serializers.CharField(
+        required=True, allow_blank=False, trim_whitespace=True, max_length=1000,
+    )
+    scan_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+
+
+class ChatbotResponseSerializer(serializers.Serializer):
+    answer = serializers.CharField()
+    question = serializers.CharField()
+    scan_id = serializers.IntegerField(min_value=1)
+    context_mode = serializers.ChoiceField(choices=('scan', 'latest_scan'))
+    sections = serializers.DictField(child=serializers.CharField())
+
 class CVESerializer(serializers.ModelSerializer):
     class Meta:
         model = CVE
@@ -33,16 +47,25 @@ class ScanSerializer(serializers.ModelSerializer):
 
 
 class NotificationSerializer(serializers.ModelSerializer):
-    scan_id = serializers.IntegerField(source='scan.id', read_only=True)
-    domaine = serializers.CharField(source='scan.domaine', read_only=True)
+    title = serializers.CharField(source='titre', read_only=True)
+    description = serializers.CharField(source='message', read_only=True)
+    timestamp = serializers.DateTimeField(source='date_creation', read_only=True)
+    read = serializers.BooleanField(source='lu', read_only=True)
+    type = serializers.SerializerMethodField()
 
     class Meta:
         model = Notification
-        fields = [
-            'id', 'titre', 'message', 'type', 'niveau', 'lu',
-            'date_creation', 'scan', 'scan_id', 'domaine',
-        ]
+        fields = ['id', 'type', 'title', 'description', 'timestamp', 'read']
         read_only_fields = fields
+
+    def get_type(self, obj):
+        if obj.type == 'scan_finished':
+            return 'success'
+        if obj.niveau == 'critical':
+            return 'alert'
+        if obj.niveau == 'warning':
+            return 'warning'
+        return 'info'
 
 
 class UserSerializer(serializers.ModelSerializer):
