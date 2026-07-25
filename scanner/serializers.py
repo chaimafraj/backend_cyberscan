@@ -8,14 +8,29 @@ class ChatbotRequestSerializer(serializers.Serializer):
         required=True, allow_blank=False, trim_whitespace=True, max_length=1000,
     )
     scan_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    conversation_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    new_conversation = serializers.BooleanField(required=False, default=False)
+    regenerate = serializers.BooleanField(required=False, default=False)
+
+    def to_internal_value(self, data):
+        """Accepte `message`/`prompt` des anciens clients comme alias de `question`."""
+        normalized = data.copy()
+        if not normalized.get('question'):
+            for alias in ('message', 'prompt'):
+                if normalized.get(alias):
+                    normalized['question'] = normalized[alias]
+                    break
+        return super().to_internal_value(normalized)
 
 
 class ChatbotResponseSerializer(serializers.Serializer):
     answer = serializers.CharField()
     question = serializers.CharField()
     scan_id = serializers.IntegerField(min_value=1)
+    conversation_id = serializers.IntegerField(min_value=1)
     context_mode = serializers.ChoiceField(choices=('scan', 'latest_scan'))
-    sections = serializers.DictField(child=serializers.CharField())
+    is_report = serializers.BooleanField()
+    sections = serializers.DictField(child=serializers.CharField(), required=False)
 
 class CVESerializer(serializers.ModelSerializer):
     class Meta:

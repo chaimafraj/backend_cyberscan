@@ -35,6 +35,7 @@ urlpatterns = [
     # --- Rapports PDF (consultation + téléchargement + email) ---
     path('api/scans/<int:pk>/rapport/', report_views.scan_rapport_detail, name='scan_rapport_detail'),
     path('api/scans/<int:pk>/rapport/download/', report_views.scan_rapport_download, name='scan_rapport_download'),
+    path('api/scans/<int:pk>/rapport/regenerate/', report_views.scan_rapport_regenerate, name='scan_rapport_regenerate'),
     path('api/scans/<int:pk>/rapport/email/', report_views.scan_rapport_email, name='scan_rapport_email'),
     path('api/scans/<int:pk>/export/json/', report_views.scan_export_json, name='scan_export_json'),
     path('api/scans/<int:pk>/export/excel/', report_views.scan_export_excel, name='scan_export_excel'),

@@ -49,6 +49,29 @@ class Scan(models.Model):
     def __str__(self):
         return f"{self.domaine} - {self.date_scan}"
 
+
+class RealtimeEvent(models.Model):
+    event_type = models.CharField(max_length=50, db_index=True)
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    scan = models.ForeignKey(
+        Scan,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='realtime_events',
+    )
+
+    class Meta:
+        ordering = ['id']
+        indexes = [
+            models.Index(fields=['scan', 'id'], name='realtime_scan_id_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.event_type} ({self.id})'
+
+
 class CVE(models.Model):
     scan = models.ForeignKey(Scan, on_delete=models.CASCADE, related_name='cves')
     cve_id = models.CharField(max_length=50)
@@ -95,6 +118,12 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ['-date_creation']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['scan', 'type', 'titre'],
+                name='unique_notification_per_scan_type_title',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.titre} ({self.type})'
@@ -170,3 +199,29 @@ class VulnerabiliteManuelle(models.Model):
 
     def __str__(self):
         return f"{self.nom} ({self.scan.domaine})"
+
+class ChatConversation(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='chat_conversations')
+    scan = models.ForeignKey(Scan, on_delete=models.CASCADE, related_name='chat_conversations')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+
+
+class ChatMessage(models.Model):
+    class Role(models.TextChoices):
+        USER = 'user', 'Utilisateur'
+        ASSISTANT = 'assistant', 'Assistant'
+
+    conversation = models.ForeignKey(
+        ChatConversation, on_delete=models.CASCADE, related_name='messages'
+    )
+    role = models.CharField(max_length=10, choices=Role.choices)
+    content = models.TextField()
+    is_report = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['id']
