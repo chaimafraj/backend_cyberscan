@@ -1,4 +1,6 @@
 import os
+import re
+import time
 from functools import lru_cache
 from rest_framework.decorators import api_view, permission_classes
 from django.db.models import Count, Avg
@@ -9,10 +11,18 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from .models import Scan, CVE, Client
+from .models import Scan, Client
 from .serializers import ScanSerializer
 from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_ssllabs, run_zap, parse_target
 from .nvd_service import enrich_scan_with_nvd
+from .cve_data import normalize_cve_id, normalize_cve_record, nvd_url_for
+from .scan_persistence import build_stored_results, replace_scan_cves
+from .ssl_certificate import extract_certificate
+from .risk_policy import level_from_score, priority_from_score
+from .report_data import (
+    extract_cipher_suites, extract_ip_address, extract_ports, extract_tls_versions,
+    extract_web_server, fetch_network_metadata,
+)
 
 from .ai_module.risk_scorer import RiskScorer
 from .ai_module.recommender import VulnRecommender
@@ -89,6 +99,7 @@ def parse_sslscan(raw_output):
 # 3. PIPELINE DE SCAN CRÉATION (SINGLE OU MULTI-SITE)
 # =========================================================================
 def scan_single_site(target, is_prod=True, has_money=False, options=None):
+    scan_started = time.monotonic()
     options = options or {}
     # La cible peut être un domaine, une IP, ou un format "host:port".
     # Si un port est présent, il remplace le port 443 par défaut des outils.
@@ -104,6 +115,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
             'protocols': [],
             'vulnerabilities': [],
             'cves': [],
+            'scan_duration_seconds': round(time.monotonic() - scan_started, 3),
         }
 
     nmap_result = run_nmap(host, port)
@@ -116,13 +128,14 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
     # lui-même ne s'exécute que si options["nvd"] est True. On enrichit à
     # partir des technologies WhatWeb, complétées par les versions de produits
     # repérées dans les sorties brutes Nmap / OpenSSL.
-    nvd_result = {'success': True, 'errors': [], 'cves': []}
+    nvd_result = {'success': True, 'requested': False, 'errors': [], 'cves': []}
     if options.get("nvd", False) == True:
         nvd_result = enrich_scan_with_nvd(
             whatweb_result=whatweb_result,
             nmap_raw=nmap_result.get('raw', ''),
             openssl_raw=openssl_result.get('raw', ''),
         )
+        nvd_result['requested'] = True
     # Nuclei is intentionally disabled for the main scan pipeline.
     nuclei_result = {
         'success': False,
@@ -131,6 +144,17 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         'raw': '',
     }
     protocols, vulnerabilities = parse_sslscan(sslscan_result['raw'])
+    source_results = {
+        'sslscan': sslscan_result.get('raw', ''), 'openssl': openssl_result.get('raw', ''),
+        'nmap': nmap_result.get('raw', ''), 'whatweb': whatweb_result, 'protocols': protocols,
+    }
+    protocols = extract_tls_versions(source_results)
+    certificate = extract_certificate(sslscan_result.get('raw', ''), openssl_result.get('raw', ''))
+    cipher_suites = extract_cipher_suites(source_results)
+    ports = extract_ports(source_results)
+    ip_address = extract_ip_address(source_results)
+    network_metadata = fetch_network_metadata(ip_address) if options.get('network_metadata', True) else {'ip_address': ip_address}
+    web_server = extract_web_server(source_results)
     has_weak_cipher = 'WEAK_CIPHER' in vulnerabilities
 
     nuclei_findings = nuclei_result.get('findings', []) if nuclei_result.get('success') else []
@@ -154,44 +178,42 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         is_prod=is_prod,
         has_money=has_money,
     )
-    # ─── 🧠 Flan-T5 ───
+    risk_decision = {
+        'score': score_ia, 'level': level_from_score(score_ia),
+        'priority': priority_from_score(score_ia),
+        'context': {'is_production': bool(is_prod), 'has_financial_data': bool(has_money)},
+    }
+    # CVE déterminées exclusivement à partir des preuves techniques.
+    # TLS 1.0 reste un constat de configuration : ce signal ne prouve pas
+    # CVE-2014-3566, qui concerne SSLv3.
     cves_data = []
-
-    if 'TLSv1.0' in vulnerabilities:
-        cve_id = "CVE-2014-3566"
-        desc_brute = "The SSL protocol 3.0 and TLS 1.0 use CBC mode ciphers, allowing man-in-the-middle attackers to conduct POODLE attacks."
+    sslscan_raw = sslscan_result.get('raw', '')
+    if re.search(r'(?i)(?:3DES|DES-CBC3)', sslscan_raw):
+        cve_id = 'CVE-2016-2183'
+        description = (
+            'Une suite Triple-DES acceptée par le serveur utilise des blocs de '
+            '64 bits et correspond à la vulnérabilité SWEET32.'
+        )
         try:
-            solution = _get_recommender().generate_remediation(cve_id, desc_brute)
+            recommendation = _get_recommender().generate_remediation(cve_id, description)
         except Exception:
-            solution = "Désactiver le protocole TLSv1.0 obsolète et migrer vers TLSv1.2 ou TLSv1.3."
-
+            recommendation = (
+                'Désactiver toutes les suites Triple-DES et conserver uniquement '
+                'des suites AEAD modernes telles que AES-GCM ou ChaCha20-Poly1305.'
+            )
         cves_data.append({
             'cve_id': cve_id,
-            'description': "Protocole TLSv1.0 obsolète détecté, vulnérable aux attaques POODLE.",
+            'description': description,
             'cvss_score': 7.5,
-            'recommandation_ia': solution
+            'produit_concerne': 'Suites TLS Triple-DES acceptées',
+            'lien_nvd': nvd_url_for(cve_id),
+            'recommandation_ia': recommendation,
         })
 
-    if has_weak_cipher:
-        cve_id_cipher = "CVE-2016-2183"
-        desc_cipher_brute = "The DES and Triple DES ciphers use a block size of 64 bits, making them vulnerable to birthday attacks (Sweet32)."
-        try:
-            solution_cipher = _get_recommender().generate_remediation(cve_id_cipher, desc_cipher_brute)
-        except Exception:
-            solution_cipher = "Désactiver les suites de chiffrement 3DES et RC4. Utiliser AES-GCM ou ChaCha20-Poly1305."
-
-        cves_data.append({
-            'cve_id': cve_id_cipher,
-            'description': "Suites de chiffrement 3DES/RC4 faibles détectées, vulnérables à l'attaque Sweet32.",
-            'cvss_score': 7.5,
-            'recommandation_ia': solution_cipher
-        })
-
-    # NVD CVEs are candidate matches: WhatWeb identifies a product/version,
-    # then NVD searches its vulnerability corpus for that technology.
-    existing_cve_ids = {cve['cve_id'] for cve in cves_data}
-    for nvd_cve in nvd_result['cves']:
-        if nvd_cve['cve_id'] in existing_cve_ids:
+    existing_cve_ids = {item['cve_id'] for item in cves_data}
+    for raw_cve in nvd_result['cves']:
+        nvd_cve = normalize_cve_record(raw_cve)
+        if nvd_cve is None or nvd_cve['cve_id'] in existing_cve_ids:
             continue
         try:
             recommendation = _get_recommender().generate_remediation(
@@ -199,37 +221,54 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
             )
         except Exception:
             recommendation = (
-                f"Mettre a jour {', '.join(nvd_cve['technologies'])} vers une version corrigee "
+                f"Mettre à jour {nvd_cve['produit_concerne']} vers une version corrigée "
                 f"et consulter l'avis NVD pour {nvd_cve['cve_id']}."
             )
-        cves_data.append({
-            'cve_id': nvd_cve['cve_id'],
-            'description': nvd_cve['description'],
-            'cvss_score': nvd_cve['cvss_score'],
-            'recommandation_ia': recommendation,
-        })
+        nvd_cve['recommandation_ia'] = recommendation
+        nvd_cve['recommendation'] = recommendation
+        cves_data.append(nvd_cve)
         existing_cve_ids.add(nvd_cve['cve_id'])
 
+    # Un template Nuclei générique reste une vulnérabilité Nuclei. Il devient
+    # une CVE uniquement si son identifiant respecte le format CVE officiel.
     for finding in nuclei_findings:
-        if finding.get('severity') in ('critical', 'high'):
-            cves_data.append({
-                'cve_id': finding.get('template_id', 'NUCLEI-UNKNOWN'),
-                'description': finding.get('name', 'Vulnérabilité détectée par Nuclei'),
-                'cvss_score': 9.0 if finding.get('severity') == 'critical' else 7.0,
-                'recommandation_ia': f"Vulnérabilité détectée sur {finding.get('matched_at', target)}. Consulter la documentation Nuclei template: {finding.get('template_id', '')}",
-            })
-
+        cve_id = normalize_cve_id(finding.get('template_id'))
+        severity = str(finding.get('severity') or '').lower()
+        if not cve_id or severity not in ('critical', 'high') or cve_id in existing_cve_ids:
+            continue
+        product = str(finding.get('name') or '').strip()
+        recommendation = (
+            f"Vulnérabilité détectée sur {finding.get('matched_at', target)}. "
+            f"Consulter la fiche NVD et la documentation du template {cve_id}."
+        )
+        cves_data.append({
+            'cve_id': cve_id,
+            'description': product,
+            'cvss_score': 9.0 if severity == 'critical' else 7.0,
+            'produit_concerne': product,
+            'lien_nvd': nvd_url_for(cve_id),
+            'recommandation_ia': recommendation,
+        })
+        existing_cve_ids.add(cve_id)
     return {
         'domaine': target,
         'success': True,
         'error': None,
         'score_risque_ia': score_ia,
+        'risk_decision': risk_decision,
         'protocols': protocols,
         'vulnerabilities': vulnerabilities,
         'cves': cves_data,
         'sslscan_raw': sslscan_result['raw'],
         'nmap_raw': nmap_result.get('raw', ''),
         'openssl_raw': openssl_result.get('raw', ''),
+        'certificate': certificate,
+        'cipher_suites': cipher_suites,
+        'ports': ports,
+        'ip_address': ip_address,
+        'network_metadata': network_metadata,
+        'web_server': web_server,
+        'scan_duration_seconds': round(time.monotonic() - scan_started, 3),
         'nuclei_findings': nuclei_findings,
         'nuclei_raw': nuclei_result.get('raw', ''),
         'nuclei_success': nuclei_result.get('success', False),
@@ -242,6 +281,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         'ssllabs': ssllabs_result,
         'nvd': {
             'success': nvd_result['success'],
+            'requested': nvd_result.get('requested', False),
             'errors': nvd_result['errors'],
             'cves_count': len(nvd_result['cves']),
         },
@@ -345,42 +385,7 @@ def scans_list(request):
             if result['success']:
                 scan = Scan.objects.create(
                     domaine=target,
-                    resultats_ssl={
-                        'sslscan': result['sslscan_raw'],
-                        'nmap': result['nmap_raw'],
-                        'openssl': result['openssl_raw'],
-                        'protocols': result['protocols'],
-                        'vulnerabilities': result['vulnerabilities'],
-                        'nuclei_findings': result.get('nuclei_findings', []),
-                        'nuclei_raw': result.get('nuclei_raw', ''),
-                        # Keep Nuclei diagnostics with the scan.  Previously a
-                        # failed SSH command was saved as empty output, which
-                        # made it indistinguishable from a scan with no hits.
-                        'nuclei_success': result.get('nuclei_success', False),
-                        'nuclei_error': result.get('nuclei_error'),
-                        # JSONField is supported by PostgreSQL, so no model
-                        # migration is required to retain WhatWeb findings.
-                        'whatweb': result.get('whatweb', {
-                            'success': False,
-                            'technologies': [],
-                        }),
-                        'ssllabs': result.get('ssllabs', {
-                            'success': False, 'status': 'not_run', 'grade': 'N/A',
-                        }),
-                        'nvd': result.get('nvd', {
-                            'success': True,
-                            'errors': [],
-                            'cves_count': 0,
-                        }),
-                        # CVE détaillées issues de l'API NVD (cve_id, cvss_score,
-                        # severity, description, published_date).
-                        'nvd_cves': result.get('nvd_cves', []),
-
-                        'zap_findings': result.get('zap_findings', []),
-                        'zap_raw': result.get('zap_raw', ''),
-                        'zap_success': result.get('zap_success', False),
-                        'zap_error': result.get('zap_error'),
-                    },
+                    resultats_ssl=build_stored_results(result),
                     score_risque_ia=result['score_risque_ia'],
                     status=Scan.Status.COMPLETED,
                     completed_at=timezone.now(),
@@ -388,14 +393,7 @@ def scans_list(request):
                     client=client_for_scan,
                 )
 
-                for c in result['cves']:
-                    CVE.objects.create(
-                        scan=scan,
-                        cve_id=c['cve_id'],
-                        description=c['description'],
-                        cvss_score=c['cvss_score'],
-                        recommandation_ia=c['recommandation_ia'],
-                    )
+                replace_scan_cves(scan, result.get('cves', []))
 
                 try:
                     from .notification_service import notify_scan_events

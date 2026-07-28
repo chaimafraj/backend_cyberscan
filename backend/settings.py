@@ -196,3 +196,8 @@ CELERY_TASK_SOFT_TIME_LIMIT = config('CELERY_TASK_SOFT_TIME_LIMIT', default=1740
 
 # Nuclei est volontairement désactivé dans le pipeline et l'interface Scanner.
 NUCLEI_ENABLED = False
+
+# Enrichissement réseau utilisé par les rapports (IP, ASN, hébergeur).
+IP_METADATA_LOOKUP_ENABLED = config('IP_METADATA_LOOKUP_ENABLED', default=True, cast=bool)
+IP_METADATA_URL = config('IP_METADATA_URL', default='https://ipwho.is/{ip}')
+IP_METADATA_TIMEOUT = config('IP_METADATA_TIMEOUT', default=8, cast=int)

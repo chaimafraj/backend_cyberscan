@@ -78,6 +78,8 @@ class CVE(models.Model):
     description = models.TextField()
     cvss_score = models.FloatField(default=0.0)
     recommandation_ia = models.TextField(null=True, blank=True)
+    produit_concerne = models.CharField(max_length=500, blank=True)
+    lien_nvd = models.URLField(max_length=500, blank=True)
 
     def __str__(self):
         return self.cve_id

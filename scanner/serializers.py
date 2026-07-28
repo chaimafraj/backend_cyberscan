@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Scan, CVE, User, VulnerabiliteManuelle, Notification
+from .cve_data import collect_scan_cves
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
@@ -35,12 +36,15 @@ class ChatbotResponseSerializer(serializers.Serializer):
 class CVESerializer(serializers.ModelSerializer):
     class Meta:
         model = CVE
-        fields = ['id', 'cve_id', 'description', 'cvss_score', 'recommandation_ia']
+        fields = [
+            'id', 'cve_id', 'description', 'cvss_score', 'produit_concerne',
+            'lien_nvd', 'recommandation_ia',
+        ]
 
 
 class ScanSummarySerializer(serializers.ModelSerializer):
     client_nom = serializers.SerializerMethodField()
-    cves_count = serializers.IntegerField(read_only=True, default=0)
+    cves_count = serializers.SerializerMethodField()
     manual_vulnerabilities_count = serializers.IntegerField(read_only=True, default=0)
     has_rapport = serializers.BooleanField(source='has_rapport_value', read_only=True, default=False)
     pdf_disponible = serializers.BooleanField(source='has_rapport_value', read_only=True, default=False)
@@ -55,6 +59,10 @@ class ScanSummarySerializer(serializers.ModelSerializer):
 
     def get_client_nom(self, obj):
         return obj.client.nom if obj.client else '—'
+
+    def get_cves_count(self, obj):
+        results = obj.resultats_ssl if isinstance(obj.resultats_ssl, dict) else {}
+        return len(collect_scan_cves(obj, results))
 
 class ScanSerializer(serializers.ModelSerializer):
     cves = CVESerializer(many=True, read_only=True)
