@@ -124,9 +124,14 @@ def run_whatweb(target, port=None):
         # passed to the remote shell to keep the SSH command safe.
         host = clean_target if not port else f'{clean_target}:{port}'
         url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{host}'
+        report_path = f'/tmp/whatweb_{os.getpid()}_{abs(hash(url)) % 100000}.json'
+        quoted_report = shlex.quote(report_path)
         command = (
-            '/home/chaima/WhatWeb/whatweb -a 3 --log-json=- --no-errors '
-            f'{shlex.quote(url)}'
+            f'rm -f {quoted_report}; '
+            f'/home/chaima/WhatWeb/whatweb -a 3 --log-json={quoted_report} --no-errors '
+            f'{shlex.quote(url)} >/dev/null; '
+            f'status=$?; cat {quoted_report} 2>/dev/null; '
+            f'rm -f {quoted_report}; exit $status'
         )
 
         ssh = get_ssh_client()

@@ -38,6 +38,24 @@ class CVESerializer(serializers.ModelSerializer):
         fields = ['id', 'cve_id', 'description', 'cvss_score', 'recommandation_ia']
 
 
+class ScanSummarySerializer(serializers.ModelSerializer):
+    client_nom = serializers.SerializerMethodField()
+    cves_count = serializers.IntegerField(read_only=True, default=0)
+    manual_vulnerabilities_count = serializers.IntegerField(read_only=True, default=0)
+    has_rapport = serializers.BooleanField(source='has_rapport_value', read_only=True, default=False)
+    pdf_disponible = serializers.BooleanField(source='has_rapport_value', read_only=True, default=False)
+
+    class Meta:
+        model = Scan
+        fields = [
+            'id', 'domaine', 'date_scan', 'score_risque_ia', 'status',
+            'error_message', 'client_nom', 'cves_count',
+            'manual_vulnerabilities_count', 'has_rapport', 'pdf_disponible',
+        ]
+
+    def get_client_nom(self, obj):
+        return obj.client.nom if obj.client else '—'
+
 class ScanSerializer(serializers.ModelSerializer):
     cves = CVESerializer(many=True, read_only=True)
     client_nom = serializers.SerializerMethodField()

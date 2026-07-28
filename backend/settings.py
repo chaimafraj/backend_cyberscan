@@ -192,3 +192,7 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_TIME_LIMIT = config('CELERY_TASK_TIME_LIMIT', default=1800, cast=int)
 CELERY_TASK_SOFT_TIME_LIMIT = config('CELERY_TASK_SOFT_TIME_LIMIT', default=1740, cast=int)
+
+
+# Nuclei est volontairement désactivé dans le pipeline et l'interface Scanner.
+NUCLEI_ENABLED = False

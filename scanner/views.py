@@ -11,7 +11,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, CVE, Client
 from .serializers import ScanSerializer
-from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_zap, parse_target
+from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_ssllabs, run_zap, parse_target
 from .nvd_service import enrich_scan_with_nvd
 
 from .ai_module.risk_scorer import RiskScorer
@@ -49,39 +49,13 @@ def register_user(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
-    user = request.user
+    from .dashboard_service import build_dashboard_payload
 
-    if user.role == 'admin':
-        scans_qs = Scan.objects.all()
-    else:
-        try:
-            client = user.client_profile
-            scans_qs = Scan.objects.filter(client=client)
-        except Client.DoesNotExist:
-            scans_qs = Scan.objects.none()
-
-    total_scans = scans_qs.count()
-    avg_risk_score = scans_qs.aggregate(Avg('score_risque_ia'))['score_risque_ia__avg'] or 0
-
-    critical_scans = scans_qs.filter(score_risque_ia__gte=7).count()
-    medium_scans = scans_qs.filter(score_risque_ia__gte=4, score_risque_ia__lt=7).count()
-    low_scans = scans_qs.filter(score_risque_ia__lt=4).count()
-
-    total_recommandations = CVE.objects.filter(scan__in=scans_qs).count()
-
-    scans_recents = scans_qs.order_by('-date_scan')[:5]
-    serializer = ScanSerializer(scans_recents, many=True)
-
-    return Response({
-        "total_scans": total_scans,
-        "avg_risk_score": round(avg_risk_score, 1),
-        "critical_count": critical_scans,
-        "medium_count": medium_scans,
-        "low_count": low_scans,
-        "total_recommandations": total_recommandations,
-        "recent_scans": serializer.data
-    }, status=status.HTTP_200_OK)
-
+    response = Response(build_dashboard_payload(request.user), status=status.HTTP_200_OK)
+    response['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response['Pragma'] = 'no-cache'
+    response['Expires'] = '0'
+    return response
 
 # =========================================================================
 # 2. INTERNAL UTILS : PARSER MTA3 EL DATA
@@ -135,6 +109,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
     nmap_result = run_nmap(host, port)
     openssl_result = run_openssl(host, port)
     whatweb_result = run_whatweb(host, port)
+    ssllabs_result = run_ssllabs(host)
 
     # ─── 🔎 API NVD (optionnelle via options={"nvd": true}) ───
     # WhatWeb tourne toujours en amont (NVD en dépend), mais l'appel NVD
@@ -155,22 +130,10 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         'findings': [],
         'raw': '',
     }
-    print(nuclei_result)
     protocols, vulnerabilities = parse_sslscan(sslscan_result['raw'])
     has_weak_cipher = 'WEAK_CIPHER' in vulnerabilities
 
-    # ─── 🧠 Random Forest ───
-    score_ia = scorer_rf.calculate_contextual_score(
-        vulnerabilities,
-        has_weak_cipher,
-        is_prod,
-        has_money
-    )
-
     nuclei_findings = nuclei_result.get('findings', []) if nuclei_result.get('success') else []
-    nuclei_critical_count = sum(1 for f in nuclei_findings if f.get('severity') in ('critical', 'high'))
-    if nuclei_critical_count > 0:
-        score_ia = min(10.0, score_ia + (nuclei_critical_count * 0.5))
 
     # ─── 🕷️ OWASP ZAP Baseline (automatique) ───
     # ZAP est lancé automatiquement après le scan SSL, sauf désactivation
@@ -180,13 +143,17 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         zap_result = run_zap(host, port=port)
 
     zap_findings = zap_result.get('findings', []) if zap_result.get('success') else []
-    for finding in zap_findings:
-        risk = (finding.get('risk') or '').lower()
-        if risk == 'high':
-            score_ia = min(10.0, score_ia + 0.3)
-        elif risk == 'medium':
-            score_ia = min(10.0, score_ia + 0.3)
-
+    score_ia = scorer_rf.calculate_scan_score(
+        security_signals=vulnerabilities,
+        has_weak_cipher=has_weak_cipher,
+        zap_findings=zap_findings,
+        nvd_cves=nvd_result.get('cves', []),
+        nmap_raw=nmap_result.get('raw', ''),
+        ssllabs_result=ssllabs_result,
+        nuclei_findings=nuclei_findings,
+        is_prod=is_prod,
+        has_money=has_money,
+    )
     # ─── 🧠 Flan-T5 ───
     cves_data = []
 
@@ -272,6 +239,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         'zap_success': zap_result.get('success', False),
         'zap_error': zap_result.get('error'),
         'whatweb': whatweb_result,
+        'ssllabs': ssllabs_result,
         'nvd': {
             'success': nvd_result['success'],
             'errors': nvd_result['errors'],
@@ -396,6 +364,9 @@ def scans_list(request):
                             'success': False,
                             'technologies': [],
                         }),
+                        'ssllabs': result.get('ssllabs', {
+                            'success': False, 'status': 'not_run', 'grade': 'N/A',
+                        }),
                         'nvd': result.get('nvd', {
                             'success': True,
                             'errors': [],
@@ -452,6 +423,7 @@ def scans_list(request):
                         'success': False,
                         'technologies': [],
                     }),
+                    'ssllabs': result.get('ssllabs', {}),
                     'nvd': result.get('nvd', {
                         'success': True,
                         'errors': [],
