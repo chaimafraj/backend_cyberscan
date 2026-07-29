@@ -91,7 +91,7 @@ def notification_mark_read(request, pk):
         return Response({'error': 'Notification introuvable'}, status=status.HTTP_404_NOT_FOUND)
 
     if not _user_can_access_scan(request.user, notification.scan):
-        return Response({'error': 'Accès refusé'}, status=status.HTTP_403_FORBIDDEN)
+        return Response({'error': {'code': 'FORBIDDEN', 'message': 'Accès refusé'}}, status=status.HTTP_403_FORBIDDEN)
 
     if not notification.lu:
         notification.lu = True
@@ -116,7 +116,7 @@ def notification_delete(request, pk):
         return Response({'error': 'Notification introuvable'}, status=status.HTTP_404_NOT_FOUND)
 
     if not _user_can_access_scan(request.user, notification.scan):
-        return Response({'error': 'Accès refusé'}, status=status.HTTP_403_FORBIDDEN)
+        return Response({'error': {'code': 'FORBIDDEN', 'message': 'Accès refusé'}}, status=status.HTTP_403_FORBIDDEN)
 
     scan = notification.scan
     notification_id = notification.id

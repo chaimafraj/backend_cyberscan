@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from .ai_module.chatbot import format_score
-from .models import CVE, Notification, Scan
+from .models import Notification
 from .cve_data import collect_scan_cves
 from .realtime_service import publish_event
 
@@ -26,25 +26,94 @@ def create_notification(scan, titre, message, type, niveau='info'):
             'category': type,
             'severity': niveau,
         })
-        logger.info('notification_created notification_id=%s type=%s scan_id=%s',
-                    notification.id, type, scan.id)
+        logger.info(
+            'notification_created notification_id=%s type=%s scan_id=%s',
+            notification.id, type, scan.id,
+        )
     return notification
+
+
+def notify_scan_started(scan):
+    return create_notification(
+        scan,
+        f'Scan démarré — {scan.domaine}',
+        f'Le scan de sécurité sur {scan.domaine} vient de démarrer.',
+        'scan_started',
+        'info',
+    )
 
 
 def notify_scan_finished(scan):
     return create_notification(
-        scan, f'Scan terminé — {scan.domaine}',
-        f'Le scan de sécurité sur {scan.domaine} est terminé. Score de risque IA : {format_score(scan.score_risque_ia)}/10.',
-        'scan_finished', 'info',
+        scan,
+        f'Scan terminé — {scan.domaine}',
+        f'Le scan de sécurité sur {scan.domaine} est terminé. '
+        f'Score de risque IA : {format_score(scan.score_risque_ia)}/10.',
+        'scan_finished',
+        'success',
+    )
+
+
+def notify_scan_cancelled(scan):
+    return create_notification(
+        scan,
+        f'Scan annulé — {scan.domaine}',
+        f"Le scan de sécurité sur {scan.domaine} a été interrompu à la demande de l'utilisateur.",
+        'scan_cancelled',
+        'warning',
+    )
+
+
+def notify_scan_failed(scan, error=None):
+    detail = str(error or scan.error_message or 'Erreur inconnue').strip()
+    return create_notification(
+        scan,
+        f'Échec du scan — {scan.domaine}',
+        f'Le scan de {scan.domaine} a échoué : {detail[:500]}',
+        'scan_failed',
+        'critical',
     )
 
 
 def notify_report_ready(scan, format_rapport='PDF'):
     label = format_rapport.upper()
     return create_notification(
-        scan, f'Rapport {label} disponible — {scan.domaine}',
+        scan,
+        f'Rapport {label} disponible — {scan.domaine}',
         f'Le rapport {label} pour {scan.domaine} est prêt au téléchargement.',
-        'report_ready', 'info',
+        'report_ready',
+        'success',
+    )
+
+
+def notify_report_failed(scan, error):
+    return create_notification(
+        scan,
+        f'Échec de génération du rapport — {scan.domaine}',
+        f"Le rapport de {scan.domaine} n'a pas pu être généré : {str(error)[:500]}",
+        'report_failed',
+        'critical',
+    )
+
+
+def notify_report_emailed(scan, recipients):
+    recipient_text = ', '.join(recipients or []) or 'destinataire configuré'
+    return create_notification(
+        scan,
+        f'Rapport envoyé par e-mail — {scan.domaine}',
+        f'Le rapport de {scan.domaine} a été envoyé à {recipient_text}.',
+        'report_emailed',
+        'success',
+    )
+
+
+def notify_report_email_failed(scan, error):
+    return create_notification(
+        scan,
+        f"Échec de l'envoi du rapport — {scan.domaine}",
+        f"Le rapport de {scan.domaine} n'a pas pu être envoyé : {str(error)[:500]}",
+        'email_failed',
+        'warning',
     )
 
 
@@ -56,18 +125,24 @@ def notify_critical_cve(scan, cve):
     description = cve.get('description') if isinstance(cve, dict) else cve.description
     niveau = 'critical' if score >= 9 else 'warning'
     return create_notification(
-        scan, f'CVE critique détectée — {cve_id}',
+        scan,
+        f'CVE critique détectée — {cve_id}',
         f'{cve_id} détectée sur {scan.domaine} (CVSS {format_score(score)}/10). {description[:300]}',
-        'new_cve', niveau,
+        'new_cve',
+        niveau,
     )
+
 
 def notify_high_risk(scan):
     if float(scan.score_risque_ia or 0) < 9:
         return None
     return create_notification(
-        scan, f'Risque élevé — {scan.domaine}',
-        f'Le score de risque IA ({format_score(scan.score_risque_ia)}/10) dépasse le seuil critique sur {scan.domaine}.',
-        'high_risk', 'critical',
+        scan,
+        f'Risque élevé — {scan.domaine}',
+        f'Le score de risque IA ({format_score(scan.score_risque_ia)}/10) '
+        f'dépasse le seuil critique sur {scan.domaine}.',
+        'high_risk',
+        'critical',
     )
 
 

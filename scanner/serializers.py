@@ -101,14 +101,15 @@ class NotificationSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_type(self, obj):
-        if obj.type == 'scan_finished':
-            return 'success'
         if obj.niveau == 'critical':
             return 'alert'
         if obj.niveau == 'warning':
             return 'warning'
+        if obj.niveau == 'success' or obj.type in {
+            'scan_finished', 'report_ready', 'report_emailed',
+        }:
+            return 'success'
         return 'info'
-
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:

@@ -7,6 +7,8 @@ import os
 import logging
 import time
 
+from .scan_cancellation import ScanCancelled
+
 logger = logging.getLogger(__name__)
 
 VM_HOST = "192.168.11.131"
@@ -342,7 +344,7 @@ def run_nuclei(target, port=None):
         return {'success': False, 'error': f'Erreur execution Nuclei: {error}', 'findings': [], 'raw': ''}
 
 
-def _run_ssh_command(ssh, command, timeout=None):
+def _run_ssh_command(ssh, command, timeout=None, cancel_check=None, on_cancel=None):
     """Exécute une commande SSH en drainant ses deux flux sans interblocage."""
     _, stdout, _ = ssh.exec_command(command, timeout=timeout)
     channel = stdout.channel
@@ -351,6 +353,14 @@ def _run_ssh_command(ssh, command, timeout=None):
     stderr_chunks = []
 
     while True:
+        if cancel_check is not None and cancel_check():
+            try:
+                if on_cancel is not None:
+                    on_cancel()
+            finally:
+                channel.close()
+            raise ScanCancelled('Commande SSH interrompue par annulation du scan')
+
         received_data = False
 
         while channel.recv_ready():
@@ -384,6 +394,23 @@ def _run_ssh_command(ssh, command, timeout=None):
     return out, err, exit_code
 
 
+def _stop_remote_container(container_name):
+    cleanup_ssh = None
+    try:
+        cleanup_ssh = get_ssh_client()
+        quoted_name = shlex.quote(container_name)
+        _run_ssh_command(
+            cleanup_ssh,
+            f'docker rm -f {quoted_name} >/dev/null 2>&1 || true',
+            timeout=20,
+        )
+    except Exception:
+        logger.warning('ZAP: arrêt du conteneur %s impossible', container_name, exc_info=True)
+    finally:
+        if cleanup_ssh is not None:
+            cleanup_ssh.close()
+
+
 def _strip_html(text):
     """Nettoie les champs desc/solution de ZAP (qui contiennent du HTML)."""
     if not text:
@@ -396,7 +423,7 @@ def _strip_html(text):
 ZAP_IMAGE = "ghcr.io/zaproxy/zaproxy:stable"
 
 
-def run_zap(target, timeout=600, port=None):
+def run_zap(target, timeout=600, port=None, cancel_check=None):
     """Scan web passif avec OWASP ZAP (zap-baseline.py) via Docker sur la VM.
 
     Le scan baseline lance un spider puis un scan passif, puis exporte un
@@ -414,6 +441,8 @@ def run_zap(target, timeout=600, port=None):
         host = clean_target if not port else f'{clean_target}:{port}'
         url = clean_target if clean_target.startswith(('http://', 'https://')) else f'https://{host}'
         quoted_url = shlex.quote(url)
+        job_id = getattr(cancel_check, 'scan_id', None) or f'{os.getpid()}-{abs(hash(clean_target)) % 100000}'
+        container_name = f'cyberscan-zap-{job_id}'
 
         ssh = get_ssh_client()
 
@@ -440,7 +469,7 @@ def run_zap(target, timeout=600, port=None):
             f"timeout {pull_timeout}s docker pull --quiet {image}"
         )
         _, pull_error, pull_code = _run_ssh_command(
-            ssh, pull_command, timeout=pull_timeout + 15
+            ssh, pull_command, timeout=pull_timeout + 15, cancel_check=cancel_check
         )
         if pull_code != 0:
             return {
@@ -456,10 +485,17 @@ def run_zap(target, timeout=600, port=None):
         #    -J : rapport JSON écrit dans /zap/wrk/ (monté sur report_dir)
         logger.info("ZAP: démarrage du scan baseline sur %s", url)
         scan_cmd = (
-            f"docker run --rm -v {report_dir}:/zap/wrk/:rw {ZAP_IMAGE} "
+            f"docker run --rm --name {shlex.quote(container_name)} "
+            f"-v {report_dir}:/zap/wrk/:rw {ZAP_IMAGE} "
             f"zap-baseline.py -t {quoted_url} -I -m 2 -J {report_name}"
         )
-        out, err, exit_code = _run_ssh_command(ssh, scan_cmd, timeout=timeout)
+        out, err, exit_code = _run_ssh_command(
+            ssh,
+            scan_cmd,
+            timeout=timeout,
+            cancel_check=cancel_check,
+            on_cancel=lambda: _stop_remote_container(container_name),
+        )
         # zap-baseline.py renvoie 0/1/2 selon les alertes ; on se fie au rapport
         # JSON plutôt qu'au code de sortie.
         logger.info("ZAP: scan terminé (exit=%s)", exit_code)
@@ -503,6 +539,8 @@ def run_zap(target, timeout=600, port=None):
         logger.info("ZAP: %d alerte(s) trouvée(s) sur %s", len(findings), url)
         return {'success': True, 'findings': findings, 'raw': raw_output, 'error': None}
 
+    except ScanCancelled:
+        raise
     except Exception as e:
         error = str(e).strip() or e.__class__.__name__
         logger.exception("ZAP: erreur d'exécution sur %s", target)

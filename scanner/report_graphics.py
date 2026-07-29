@@ -364,7 +364,6 @@ def _summary(scan, results, findings, styles):
 
 def graphical_indicators(scan, results, findings, tools, styles):
     """Section compacte : 3 blocs logiques, sans graphique vide ni métrique inventée."""
-    score = float(scan.score_risque_ia or 0)
     metrics = build_report_metrics(scan, results, findings)
     analysis = build_report_analysis(scan, results, findings)
     ports = metrics['ports']
@@ -386,9 +385,6 @@ def graphical_indicators(scan, results, findings, tools, styles):
         Spacer(1, 5),
         _summary(scan, results, findings, styles),
         Spacer(1, 6),
-        _pie(findings, metrics),
-        _gauge(score),
-        Paragraph(_escape(_interpretation(score)), styles['CSBody']),
         PageBreak(),
         Paragraph('Sécurité SSL/TLS et exposition réseau', styles['CSHeading']),
         _tls_table(results, styles),

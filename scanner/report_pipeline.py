@@ -1,9 +1,4 @@
-"""
-Point d'entrée unique post-scan : PDF + email.
-
-À appeler une fois le Scan ET ses CVE créés en base
-(afin que le rapport contienne la liste CVE complète).
-"""
+"""Point unique post-scan : génération PDF puis envoi par e-mail."""
 from __future__ import annotations
 
 import logging
@@ -18,12 +13,7 @@ def finalize_scan_report(
     scan: Scan,
     extra_emails: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    1. Génère et sauvegarde le PDF (modèle Rapport)
-    2. Envoie l'email avec pièce jointe (erreurs capturées)
-
-    Ne lève pas d'exception vers l'appelant : le scan existant reste intact.
-    """
+    """Génère le PDF et envoie le rapport sans faire échouer le scan terminé."""
     outcome: Dict[str, Any] = {
         'rapport_id': None,
         'pdf_ok': False,
@@ -41,6 +31,11 @@ def finalize_scan_report(
         msg = f'PDF: {exc}'
         outcome['errors'].append(msg)
         logger.exception('finalize_scan_report PDF échoué scan #%s', scan.id)
+        try:
+            from .notification_service import notify_report_failed
+            notify_report_failed(scan, exc)
+        except Exception:
+            logger.warning('report_failure_notification_failed scan_id=%s', scan.id, exc_info=True)
 
     try:
         from .report_email import send_scan_report_email
@@ -54,5 +49,10 @@ def finalize_scan_report(
         msg = f'Email: {exc}'
         outcome['errors'].append(msg)
         logger.exception('finalize_scan_report email échoué scan #%s', scan.id)
+        try:
+            from .notification_service import notify_report_email_failed
+            notify_report_email_failed(scan, exc)
+        except Exception:
+            logger.warning('email_failure_notification_failed scan_id=%s', scan.id, exc_info=True)
 
     return outcome

@@ -11,6 +11,7 @@ RESOURCE_MAP = {
     'scan.running': ['scans', 'dashboard'],
     'scan.completed': ['scans', 'dashboard', 'alerts', 'chatbot', 'reports', 'notifications'],
     'scan.failed': ['scans', 'dashboard', 'notifications'],
+    'scan.cancelled': ['scans', 'dashboard', 'notifications'],
     'notification.created': ['notifications'],
     'notification.updated': ['notifications'],
     'notification.deleted': ['notifications'],

@@ -24,6 +24,7 @@ class Scan(models.Model):
         RUNNING = 'RUNNING', 'En cours'
         COMPLETED = 'COMPLETED', 'Termine'
         FAILED = 'FAILED', 'Echoue'
+        CANCELLED = 'CANCELLED', 'Annule'
 
     domaine = models.CharField(max_length=255)
     date_scan = models.DateTimeField(auto_now_add=True)
@@ -99,13 +100,20 @@ class Rapport(models.Model):
 
 class Notification(models.Model):
     TYPE_CHOICES = [
+        ('scan_started', 'Scan démarré'),
         ('scan_finished', 'Scan terminé'),
+        ('scan_cancelled', 'Scan annulé'),
+        ('scan_failed', 'Échec du scan'),
         ('new_cve', 'Nouvelle CVE'),
         ('high_risk', 'Risque élevé'),
         ('report_ready', 'Rapport disponible'),
+        ('report_failed', 'Échec du rapport'),
+        ('report_emailed', 'Rapport envoyé'),
+        ('email_failed', 'Échec de l’envoi'),
     ]
     NIVEAU_CHOICES = [
         ('info', 'Info'),
+        ('success', 'Succès'),
         ('warning', 'Avertissement'),
         ('critical', 'Critique'),
     ]

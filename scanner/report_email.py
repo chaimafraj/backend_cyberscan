@@ -23,6 +23,17 @@ from .report_generator import (
 logger = logging.getLogger(__name__)
 
 
+def _notify_email_status(scan, result):
+    try:
+        from .notification_service import notify_report_emailed, notify_report_email_failed
+        if result.get('success'):
+            notify_report_emailed(scan, result.get('recipients', []))
+        else:
+            notify_report_email_failed(scan, result.get('error') or 'Erreur envoi inconnue')
+    except Exception:
+        logger.warning('email_status_notification_failed scan_id=%s', scan.id, exc_info=True)
+
+
 def resolve_recipient_emails(scan: Scan, extra_emails: Optional[List[str]] = None) -> List[str]:
     """
     Destinataires par ordre de priorité :
@@ -159,6 +170,7 @@ def send_scan_report_email(
                 'Email rapport scan #%s non envoyé : aucun destinataire (domaine=%s)',
                 scan.id, scan.domaine,
             )
+            _notify_email_status(scan, result)
             return result
 
         if rapport is None:
@@ -196,6 +208,7 @@ def send_scan_report_email(
             'Email rapport scan #%s envoyé à %s',
             scan.id, ', '.join(recipients),
         )
+        _notify_email_status(scan, result)
         return result
 
     except Exception as exc:
@@ -207,4 +220,5 @@ def send_scan_report_email(
             'Échec envoi email rapport scan #%s : %s',
             getattr(scan, 'id', '?'), error_msg,
         )
+        _notify_email_status(scan, result)
         return result

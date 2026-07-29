@@ -4,7 +4,9 @@ import re
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from celery import current_app
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -172,6 +174,11 @@ def submit_scans(request):
             scan.error_message = 'Mise en file Celery impossible. Vérifiez Redis et le worker Celery.'
             scan.save(update_fields=['status', 'error_message'])
             publish_event('scan.failed', scan, {'status': Scan.Status.FAILED})
+            try:
+                from .notification_service import notify_scan_failed
+                notify_scan_failed(scan, scan.error_message)
+            except Exception:
+                logger.warning('scan_queue_notification_failed scan_id=%s', scan.id, exc_info=True)
             return Response(
                 {'error': scan.error_message, 'scan_id': scan.id},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -196,3 +203,51 @@ def scans_list(request):
     if request.method == 'GET':
         return list_scans(request)
     return submit_scans(request)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def cancel_scan(request, pk):
+    """Interrompt un scan en attente ou en cours appartenant à l'utilisateur."""
+    with transaction.atomic():
+        scan = visible_scans(request.user).select_for_update().filter(pk=pk).first()
+        if scan is None:
+            return Response({'error': 'Scan introuvable'}, status=status.HTTP_404_NOT_FOUND)
+
+        if scan.status == Scan.Status.CANCELLED:
+            return Response({
+                'scan_id': scan.id,
+                'status': scan.status,
+                'message': 'Le scan est déjà annulé.',
+            }, status=status.HTTP_200_OK)
+
+        if scan.status not in (Scan.Status.PENDING, Scan.Status.RUNNING):
+            return Response(
+                {'error': 'Seul un scan en attente ou en cours peut être annulé.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        task_id = scan.celery_task_id
+        scan.status = Scan.Status.CANCELLED
+        scan.completed_at = timezone.now()
+        scan.error_message = "Scan annulé par l'utilisateur."
+        scan.save(update_fields=['status', 'completed_at', 'error_message'])
+        publish_on_commit('scan.cancelled', scan, {'status': Scan.Status.CANCELLED})
+
+    if task_id:
+        try:
+            current_app.control.revoke(task_id, terminate=False)
+        except Exception:
+            logger.warning('scan_revoke_failed scan_id=%s task_id=%s', scan.id, task_id, exc_info=True)
+
+    try:
+        from .notification_service import notify_scan_cancelled
+        notify_scan_cancelled(scan)
+    except Exception:
+        logger.warning('scan_cancel_notification_failed scan_id=%s', scan.id, exc_info=True)
+
+    return Response({
+        'scan_id': scan.id,
+        'status': Scan.Status.CANCELLED,
+        'message': 'Scan annulé avec succès.',
+    }, status=status.HTTP_200_OK)

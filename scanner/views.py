@@ -12,6 +12,7 @@ from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, Client
+from .scan_cancellation import ScanCancelled
 from .serializers import ScanSerializer
 from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_ssllabs, run_zap, parse_target
 from .nvd_service import enrich_scan_with_nvd
@@ -98,13 +99,25 @@ def parse_sslscan(raw_output):
 # =========================================================================
 # 3. PIPELINE DE SCAN CRÉATION (SINGLE OU MULTI-SITE)
 # =========================================================================
-def scan_single_site(target, is_prod=True, has_money=False, options=None):
+def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel_check=None):
     scan_started = time.monotonic()
     options = options or {}
+
+    def ensure_not_cancelled():
+        if cancel_check is None:
+            return
+        ensure = getattr(cancel_check, 'ensure_not_cancelled', None)
+        if ensure is not None:
+            ensure(force=True)
+        elif cancel_check():
+            raise ScanCancelled('Scan annulé')
+
+    ensure_not_cancelled()
     # La cible peut être un domaine, une IP, ou un format "host:port".
     # Si un port est présent, il remplace le port 443 par défaut des outils.
     host, port = parse_target(target)
     sslscan_result = run_sslscan(host, port)
+    ensure_not_cancelled()
 
     if not sslscan_result['success']:
         return {
@@ -119,9 +132,13 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
         }
 
     nmap_result = run_nmap(host, port)
+    ensure_not_cancelled()
     openssl_result = run_openssl(host, port)
+    ensure_not_cancelled()
     whatweb_result = run_whatweb(host, port)
+    ensure_not_cancelled()
     ssllabs_result = run_ssllabs(host)
+    ensure_not_cancelled()
 
     # ─── 🔎 API NVD (optionnelle via options={"nvd": true}) ───
     # WhatWeb tourne toujours en amont (NVD en dépend), mais l'appel NVD
@@ -136,6 +153,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
             openssl_raw=openssl_result.get('raw', ''),
         )
         nvd_result['requested'] = True
+        ensure_not_cancelled()
     # Nuclei is intentionally disabled for the main scan pipeline.
     nuclei_result = {
         'success': False,
@@ -164,7 +182,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None):
     # explicite via options={"zap": false}.
     zap_result = {'success': False, 'findings': [], 'raw': '', 'error': 'ZAP désactivé'}
     if options.get("zap", True):
-        zap_result = run_zap(host, port=port)
+        zap_result = run_zap(host, port=port, cancel_check=cancel_check)
 
     zap_findings = zap_result.get('findings', []) if zap_result.get('success') else []
     score_ia = scorer_rf.calculate_scan_score(
