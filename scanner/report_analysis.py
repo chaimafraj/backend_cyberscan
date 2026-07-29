@@ -1,7 +1,7 @@
 """Sections narratives déterministes construites uniquement depuis le scan."""
 from __future__ import annotations
 
-from .report_data import build_report_metrics
+from .report_data import build_report_metrics, tool_execution_issues
 from .risk_policy import level_from_score, normalize_score, priority_from_score, recommendation_order
 
 
@@ -18,6 +18,7 @@ def build_report_analysis(scan, results, findings):
     overall_priority = priority_from_score(score)
     severity = metrics["severity"]
     certificate = results.get("certificate") or {}
+    execution_issues = tool_execution_issues(results)
 
     observed_parts = [
         f"Score IA {score:.1f}/10 ({level})",
@@ -33,16 +34,33 @@ def build_report_analysis(scan, results, findings):
     if certificate:
         certificate_state = "expiré" if certificate.get("expired") is True else "valide" if certificate.get("expired") is False else "présent"
         observed_parts.append(f"certificat {certificate_state}")
+    if execution_issues:
+        observed_parts.append(f"couverture partielle ({len(execution_issues)} outil(s) en échec)")
 
     summary = f"Analyse de {scan.domaine} : " + "; ".join(observed_parts) + "."
     top = ordered[:3]
     ai_rows = [
-        ("Score et niveau", f"{score:.1f}/10 — {level}"),
+        (
+            "Score et niveau",
+            f"{score:.1f}/10 — {level}"
+            + (" — aucun signal de risque détecté" if score == 0 and not ordered else ""),
+        ),
         ("Répartition observée", f"Critiques {severity['Critique']} | Élevées {severity['Élevé']} | Moyennes {severity['Moyen']} | Faibles {severity['Faible']}"),
-        ("Constats prioritaires", _joined((item["component"] for item in top), "Aucun constat significatif extrait")),
-        ("Sources des preuves", _joined((item["type"] for item in ordered), "Aucune source de vulnérabilité")),
+        ("Constats prioritaires", _joined((item["component"] for item in top), "Aucun constat de vulnérabilité détecté")),
+        ("Sources analysées", _joined(metrics["tools"], "Aucun scanner n’a retourné de résultat")),
+        (
+            "Couverture du scan",
+            "Partielle — " + "; ".join(f"{item['tool']}: {item['detail']}" for item in execution_issues)
+            if execution_issues else "Complète pour les outils activés",
+        ),
         ("Priorité globale", f"{overall_priority['code']} — {overall_priority['label']}"),
     ]
+    if score == 0 and not ordered:
+        ai_rows.append((
+            "Interprétation",
+            "Le score 0.0 signifie qu’aucun signal de risque positif n’a été détecté "
+            "dans les résultats reçus; il ne signifie pas qu’aucun outil n’a été exécuté.",
+        ))
     if top:
         ai_rows.append(("Recommandation principale", top[0]["recommendation"]))
 
@@ -59,6 +77,20 @@ def build_report_analysis(scan, results, findings):
         }
         for item in ordered
     ]
+    for index, issue in enumerate(execution_issues, 1):
+        plan.append({
+            "priority_code": "P2",
+            "priority": "Court terme",
+            "id": f"SCAN-COVERAGE-{index:03d}",
+            "component": issue["tool"],
+            "recommendation": (
+                f"Relancer {issue['tool']} et intégrer son résultat avant de considérer "
+                "la couverture du scan comme complète."
+            ),
+            "evidence": issue["detail"],
+            "score": 0.0,
+            "severity": "Information",
+        })
 
     if ordered:
         top_ids = _joined((item["id"] for item in top), "")
@@ -66,16 +98,28 @@ def build_report_analysis(scan, results, findings):
             f"Le scan de {scan.domaine} établit un risque {level.lower()} ({score:.1f}/10) "
             f"à partir de {metrics['findings']} constat(s) documenté(s). "
             f"La priorité {overall_priority['code']} concerne {top_ids}. "
-            f"Après application des {len(plan)} action(s) associée(s), un nouveau scan devra mesurer le résultat."
+            f"Après application des {len(ordered)} action(s) associée(s), un nouveau scan devra mesurer le résultat."
         )
     else:
         conclusion = (
             f"Le scan de {scan.domaine} établit un risque {level.lower()} ({score:.1f}/10) "
             "sans vulnérabilité significative extraite des résultats disponibles."
         )
+    if execution_issues:
+        conclusion += (
+            " La couverture reste partielle car "
+            + ", ".join(item["tool"] for item in execution_issues)
+            + " n’a pas retourné un résultat exploitable; ces outils doivent être relancés."
+        )
 
     return {
-        "score": score, "level": level, "overall_priority": overall_priority,
-        "metrics": metrics, "summary": summary, "ai_rows": ai_rows,
-        "plan": plan, "conclusion": conclusion,
+        "score": score,
+        "level": level,
+        "overall_priority": overall_priority,
+        "metrics": metrics,
+        "summary": summary,
+        "ai_rows": ai_rows,
+        "plan": plan,
+        "conclusion": conclusion,
+        "execution_issues": execution_issues,
     }

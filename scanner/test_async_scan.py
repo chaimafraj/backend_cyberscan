@@ -57,6 +57,25 @@ class AsyncScanSubmissionTests(APITestCase):
         self.assertEqual(Scan.objects.filter(status=Scan.Status.PENDING).count(), 2)
         self.assertEqual(apply_async.call_count, 2)
 
+    @patch('scanner.scan_submission.execute_scan.apply_async')
+    def test_duplicate_active_target_reuses_existing_scan(self, apply_async):
+        user = User.objects.create_user(
+            username='duplicate-admin', email='duplicate@example.com',
+            password='StrongPass123!', role='admin',
+        )
+        self.client.force_authenticate(user=user)
+        existing = Scan.objects.create(
+            domaine='example.com', status=Scan.Status.RUNNING,
+            celery_task_id='existing-task', created_by=user,
+        )
+
+        response = self.client.post('/api/scans/', {'url': 'example.com'}, format='json')
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data['scans'][0]['scan_id'], existing.id)
+        self.assertTrue(response.data['scans'][0]['reused'])
+        self.assertEqual(Scan.objects.filter(created_by=user, domaine='example.com').count(), 1)
+        apply_async.assert_not_called()
     @patch('scanner.report_pipeline.finalize_scan_report', return_value={'pdf_ok': True, 'errors': []})
     @patch('scanner.tasks._run_pipeline')
     def test_worker_persists_running_then_completed(self, pipeline, _report):

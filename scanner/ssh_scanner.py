@@ -5,6 +5,7 @@ import re
 import shlex
 import os
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -342,18 +343,44 @@ def run_nuclei(target, port=None):
 
 
 def _run_ssh_command(ssh, command, timeout=None):
-    """Exécute une commande SSH en BLOQUANT jusqu'à la fin de la commande distante.
+    """Exécute une commande SSH en drainant ses deux flux sans interblocage."""
+    _, stdout, _ = ssh.exec_command(command, timeout=timeout)
+    channel = stdout.channel
+    deadline = time.monotonic() + float(timeout) if timeout is not None else None
+    stdout_chunks = []
+    stderr_chunks = []
 
-    Contrairement à un simple exec_command (asynchrone), on attend le code de
-    sortie avant de lire les flux, ce qui évite les conditions de course entre
-    `mkdir`, `docker run` et `cat`.
-    Retourne (stdout_str, stderr_str, exit_code).
-    """
-    _, stdout, stderr = ssh.exec_command(command, timeout=timeout)
-    # recv_exit_status() bloque tant que la commande distante n'a pas fini.
-    exit_code = stdout.channel.recv_exit_status()
-    out = stdout.read().decode(errors='replace')
-    err = stderr.read().decode(errors='replace')
+    while True:
+        received_data = False
+
+        while channel.recv_ready():
+            chunk = channel.recv(64 * 1024)
+            if not chunk:
+                break
+            stdout_chunks.append(chunk)
+            received_data = True
+
+        while channel.recv_stderr_ready():
+            chunk = channel.recv_stderr(64 * 1024)
+            if not chunk:
+                break
+            stderr_chunks.append(chunk)
+            received_data = True
+
+        if channel.exit_status_ready():
+            if not channel.recv_ready() and not channel.recv_stderr_ready():
+                break
+
+        if deadline is not None and time.monotonic() >= deadline:
+            channel.close()
+            raise TimeoutError(f'Commande SSH expirée après {timeout} secondes')
+
+        if not received_data:
+            time.sleep(0.05)
+
+    exit_code = channel.recv_exit_status()
+    out = b''.join(stdout_chunks).decode(errors='replace')
+    err = b''.join(stderr_chunks).decode(errors='replace')
     return out, err, exit_code
 
 
@@ -405,8 +432,23 @@ def run_zap(target, timeout=600, port=None):
 
         # 3) Pré-télécharger l'image : le PREMIER pull (~1 Go) dépasse souvent
         #    le timeout du scan lui-même et faisait échouer run_zap silencieusement.
-        logger.info("ZAP: docker pull %s", ZAP_IMAGE)
-        _run_ssh_command(ssh, f"docker pull {ZAP_IMAGE}", timeout=timeout)
+        logger.info("ZAP: préparation de l'image %s", ZAP_IMAGE)
+        pull_timeout = max(int(timeout), 1)
+        image = shlex.quote(ZAP_IMAGE)
+        pull_command = (
+            f"docker image inspect {image} >/dev/null 2>&1 || "
+            f"timeout {pull_timeout}s docker pull --quiet {image}"
+        )
+        _, pull_error, pull_code = _run_ssh_command(
+            ssh, pull_command, timeout=pull_timeout + 15
+        )
+        if pull_code != 0:
+            return {
+                'success': False,
+                'error': pull_error.strip() or 'Impossible de préparer l’image Docker ZAP',
+                'findings': [],
+                'raw': pull_error,
+            }
 
         # 4) Lancer le scan baseline.
         #    -I : ne pas retourner un code d'échec sur les warnings

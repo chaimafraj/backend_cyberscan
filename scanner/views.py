@@ -304,6 +304,10 @@ def test_api(request):
 def scans_list(request):
     user = request.user
 
+    if request.method == 'POST':
+        from .scan_submission import submit_scans
+        return submit_scans(request)
+
     if user.role == 'admin':
         base_qs = Scan.objects.all()
     else:

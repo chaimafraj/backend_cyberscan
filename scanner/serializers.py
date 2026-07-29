@@ -74,6 +74,7 @@ class ScanSerializer(serializers.ModelSerializer):
         model = Scan
         fields = [
             'id', 'domaine', 'date_scan', 'resultats_ssl', 'score_risque_ia',
+            'status', 'error_message', 'started_at', 'completed_at',
             'cves', 'client_nom', 'pdf_disponible', 'has_rapport',
         ]
 

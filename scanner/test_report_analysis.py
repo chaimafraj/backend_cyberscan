@@ -71,3 +71,35 @@ class RiskAndNarrativeConsistencyTests(SimpleTestCase):
         self.assertIn(findings[0]["component"], rendered_analysis)
         self.assertIn(findings[0]["recommendation"], rendered_analysis)
         self.assertNotIn("Non disponible", analysis["summary"] + analysis["conclusion"] + rendered_analysis)
+    def test_zero_score_distinguishes_no_findings_from_no_scanner_data(self):
+        scan = SimpleNamespace(
+            id=100, domaine="secure.example", score_risque_ia=0.0,
+            cves=FakeCveManager([]), started_at=None, completed_at=None,
+        )
+        results = normalize_results({
+            "sslscan": "TLSv1.0 disabled\nTLSv1.1 disabled\nTLSv1.2 enabled\nTLSv1.3 enabled",
+            "openssl": "subject=CN=secure.example",
+            "nmap": "443/tcp open https",
+            "whatweb": {"success": True, "technologies": [{"name": "HTML5"}]},
+            "nvd": {"requested": True, "success": True, "errors": [], "cves_count": 0},
+            "nvd_cves": [],
+            "vulnerabilities": [],
+            "zap_success": False,
+            "zap_error": "SSH session not active",
+            "ssllabs": {"success": False, "status": "dns", "grade": "N/A"},
+        })
+
+        findings = _build_findings(scan, results)
+        analysis = build_report_analysis(scan, results, findings)
+        rows = dict(analysis["ai_rows"])
+
+        self.assertEqual(findings, [])
+        self.assertEqual(analysis["score"], 0.0)
+        self.assertIn("SSLScan", rows["Sources analysées"])
+        self.assertIn("Nmap", rows["Sources analysées"])
+        self.assertNotIn("Aucune source de vulnérabilité", " ".join(rows.values()))
+        self.assertIn("Partielle", rows["Couverture du scan"])
+        self.assertIn("OWASP ZAP", rows["Couverture du scan"])
+        self.assertIn("SSL Labs", rows["Couverture du scan"])
+        self.assertIn("aucun signal de risque", rows["Interprétation"])
+        self.assertEqual(len(analysis["plan"]), 2)

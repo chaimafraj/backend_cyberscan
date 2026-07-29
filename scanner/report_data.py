@@ -188,6 +188,42 @@ def tool_names_with_results(results):
     return [name for name, available in checks if available]
 
 
+def tool_execution_issues(results):
+    """Retourne uniquement les échecs réels des outils activés."""
+    issues = []
+
+    def add(tool, detail):
+        cleaned = str(detail or "").strip()
+        if cleaned:
+            issues.append({"tool": tool, "detail": cleaned[:300]})
+
+    whatweb = results.get("whatweb") or {}
+    if whatweb.get("success") is False and whatweb.get("error"):
+        add("WhatWeb", whatweb["error"])
+
+    ssllabs = results.get("ssllabs") or results.get("ssl_labs") or {}
+    if ssllabs.get("success") is False and ssllabs.get("status") not in (None, "", "not_run"):
+        add("SSL Labs", ssllabs.get("error") or f"statut {ssllabs.get('status')}")
+
+    zap_error = results.get("zap_error")
+    if results.get("zap_success") is False and zap_error and "désactiv" not in str(zap_error).casefold():
+        add("OWASP ZAP", zap_error)
+
+    nuclei_error = results.get("nuclei_error")
+    if (
+        results.get("nuclei_success") is False
+        and nuclei_error
+        and "disabled" not in str(nuclei_error).casefold()
+        and "désactiv" not in str(nuclei_error).casefold()
+    ):
+        add("Nuclei", nuclei_error)
+
+    nvd = results.get("nvd") or {}
+    if nvd.get("requested") is True and nvd.get("success") is False:
+        add("NVD", "; ".join(str(item) for item in nvd.get("errors") or []) or "requête en échec")
+
+    return issues
+
 def collect_cves(scan, results):
     return collect_scan_cves(scan, results)
 

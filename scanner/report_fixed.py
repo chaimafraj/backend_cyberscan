@@ -16,6 +16,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm, mm
 from reportlab.platypus import BaseDocTemplate, Flowable, Frame, Image, PageBreak, PageTemplate, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.platypus.tableofcontents import TableOfContents
+from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.charts.piecharts import Pie
@@ -37,6 +38,56 @@ TOP_FINDINGS = 15
 STANDARD_PORTS = {22, 25, 80, 110, 143, 443}
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
+
+def _history_url():
+    configured_url = str(getattr(settings, 'CYBERSCAN_HISTORY_URL', '') or '').strip()
+    if configured_url:
+        return configured_url
+    site_url = str(getattr(settings, 'CYBERSCAN_SITE_URL', 'http://localhost:4200')).rstrip('/')
+    return f'{site_url}/historique'
+
+
+def _draw_history_qr(canvas, history_url):
+    """Dessine le QR d'accès à l'historique en haut de la couverture."""
+    qr_size = 25 * mm
+    qr = QrCodeWidget(history_url)
+    x1, y1, x2, y2 = qr.getBounds()
+    qr_width = x2 - x1
+    qr_height = y2 - y1
+    drawing = Drawing(
+        qr_size,
+        qr_size,
+        transform=[qr_size / qr_width, 0, 0, qr_size / qr_height, 0, 0],
+    )
+    drawing.add(qr)
+
+    page_width, page_height = A4
+    x = page_width - 15 * mm - qr_size
+    y = page_height - 17 * mm - qr_size
+
+    canvas.saveState()
+    canvas.setFillColor(COLOR_WHITE)
+    canvas.roundRect(
+        x - 1.2 * mm,
+        y - 1.2 * mm,
+        qr_size + 2.4 * mm,
+        qr_size + 2.4 * mm,
+        1.5 * mm,
+        fill=1,
+        stroke=0,
+    )
+    drawing.drawOn(canvas, x, y)
+    canvas.setFillColor(COLOR_PRIMARY)
+    canvas.setFont('Helvetica-Bold', 6.5)
+    canvas.drawCentredString(x + qr_size / 2, y - 3.5 * mm, 'HISTORIQUE DES SCANS')
+    canvas.restoreState()
+
+
+def _report_page(canvas, doc):
+    _header_footer(canvas, doc)
+    if doc.page == 1:
+        _draw_history_qr(canvas, doc.history_url)
+
 class CyberScanDocTemplate(SimpleDocTemplate):
     """Document ReportLab alimentant automatiquement la table des matières."""
 
@@ -47,7 +98,7 @@ class CyberScanDocTemplate(SimpleDocTemplate):
     def build_with_toc(self, flowables):
         self._calc()
         frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id='normal')
-        self.addPageTemplates(PageTemplate(id='CyberScan', frames=frame, onPage=_header_footer))
+        self.addPageTemplates(PageTemplate(id='CyberScan', frames=frame, onPage=_report_page))
         BaseDocTemplate.multiBuild(self, flowables)
 
 
@@ -535,6 +586,7 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
         topMargin=18*mm, bottomMargin=22*mm,
         title=f'{scan.domaine} — Rapport de sécurité CyberScan', author='CyberScan',
     )
+    doc.history_url = _history_url()
     story = [Spacer(1, 2.3*cm)]
     logo = _logo_path()
     if logo:
