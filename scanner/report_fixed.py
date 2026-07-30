@@ -14,8 +14,9 @@ from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm, mm
-from reportlab.platypus import BaseDocTemplate, Flowable, Frame, Image, PageBreak, PageTemplate, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import BaseDocTemplate, Flowable, Frame, Image, PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.platypus.tableofcontents import TableOfContents
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.graphics.charts.barcharts import VerticalBarChart
@@ -47,8 +48,8 @@ def _history_url():
     return f'{site_url}/historique'
 
 
-def _draw_history_qr(canvas, history_url):
-    """Dessine le QR d'accès à l'historique en haut de la couverture."""
+def _history_qr_block(history_url):
+    """Construit le QR d’accès à l’historique pour le bandeau de couverture."""
     qr_size = 25 * mm
     qr = QrCodeWidget(history_url)
     x1, y1, x2, y2 = qr.getBounds()
@@ -60,35 +61,68 @@ def _draw_history_qr(canvas, history_url):
         transform=[qr_size / qr_width, 0, 0, qr_size / qr_height, 0, 0],
     )
     drawing.add(qr)
-
-    page_width, page_height = A4
-    x = page_width - 15 * mm - qr_size
-    y = page_height - 17 * mm - qr_size
-
-    canvas.saveState()
-    canvas.setFillColor(COLOR_WHITE)
-    canvas.roundRect(
-        x - 1.2 * mm,
-        y - 1.2 * mm,
-        qr_size + 2.4 * mm,
-        qr_size + 2.4 * mm,
-        1.5 * mm,
-        fill=1,
-        stroke=0,
+    label_style = ParagraphStyle(
+        'CSHistoryQrLabel',
+        fontName='Helvetica-Bold',
+        fontSize=6.5,
+        leading=7,
+        textColor=COLOR_PRIMARY,
+        alignment=TA_CENTER,
+        spaceBefore=2,
     )
-    drawing.drawOn(canvas, x, y)
-    canvas.setFillColor(COLOR_PRIMARY)
-    canvas.setFont('Helvetica-Bold', 6.5)
-    canvas.drawCentredString(x + qr_size / 2, y - 3.5 * mm, 'HISTORIQUE DES SCANS')
-    canvas.restoreState()
-
+    block = Table(
+        [[drawing], [Paragraph('HISTORIQUE DES SCANS', label_style)]],
+        colWidths=[3.2 * cm],
+    )
+    block.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    return block
 
 def _report_page(canvas, doc):
     _header_footer(canvas, doc)
-    if doc.page == 1:
-        _draw_history_qr(canvas, doc.history_url)
 
-class CyberScanDocTemplate(SimpleDocTemplate):
+
+class NumberedCanvas(Canvas):
+    """Ajoute la pagination Page X / total après calcul du document complet."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+        self._cyberscan_total_pagination = True
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        page_states = self._saved_page_states
+        page_count = len(page_states)
+        for state in page_states:
+            self.__dict__.update(state)
+            self._draw_page_number(page_count)
+            Canvas.showPage(self)
+        Canvas.save(self)
+
+    def _draw_page_number(self, page_count):
+        page_width, _ = A4
+        self.saveState()
+        self.setFillColor(COLOR_WHITE)
+        self.setFont('Helvetica', 8)
+        self.drawRightString(
+            page_width - 15*mm,
+            7*mm,
+            f'Page {self.getPageNumber()} / {page_count}',
+        )
+        self.restoreState()
+
+
+class CyberScanDocTemplate(BaseDocTemplate):
     """Document ReportLab alimentant automatiquement la table des matières."""
 
     def afterFlowable(self, flowable):
@@ -99,7 +133,7 @@ class CyberScanDocTemplate(SimpleDocTemplate):
         self._calc()
         frame = Frame(self.leftMargin, self.bottomMargin, self.width, self.height, id='normal')
         self.addPageTemplates(PageTemplate(id='CyberScan', frames=frame, onPage=_report_page))
-        BaseDocTemplate.multiBuild(self, flowables)
+        BaseDocTemplate.multiBuild(self, flowables, canvasmaker=NumberedCanvas)
 
 
 def _toc_heading(text, styles):
@@ -516,13 +550,15 @@ def _cell(value, styles, bold=False):
     text = _escape(value).replace('\n', '<br/>')
     return Paragraph(f'<b>{text}</b>' if bold else text, styles['CSTableCell'])
 
-def _table_explanation(text, styles):
-    return Paragraph(f'<b>Lecture :</b> {_escape(text)}', styles['CSBody'])
+def _table_recommendation(text, styles):
+    recommendation_style = styles['CSBody'].clone('CSTableRecommendation', spaceBefore=8)
+    return Paragraph(f'<b>Recommandation :</b> {_escape(text)}', recommendation_style)
 
 
-def _link_cell(url, styles):
+def _link_cell(url, styles, label='Fiche NVD'):
     safe_url = _escape(url)
-    return Paragraph(f'<link href="{safe_url}" color="#0ea5e9">Fiche NVD</link>', styles['CSTableCell'])
+    safe_label = _escape(label)
+    return Paragraph(f'<link href="{safe_url}" color="#0ea5e9">{safe_label}</link>', styles['CSTableCell'])
 
 
 def _activated_tools(results):
@@ -670,28 +706,49 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     doc = CyberScanDocTemplate(
         str(path), pagesize=A4, leftMargin=15*mm, rightMargin=15*mm,
         topMargin=18*mm, bottomMargin=22*mm,
-        title=f'{scan.domaine} — Rapport de sécurité CyberScan', author='CyberScan',
+        title='Rapport de sécurité CyberScan', author='CyberScan',
     )
     doc.history_url = _history_url()
-    story = [Spacer(1, 2.3*cm)]
     logo = _logo_path()
-    if logo:
-        story.extend([Image(logo, width=10*cm, height=2.5*cm), Spacer(1, cm)])
-    story.extend([
-        Paragraph(f'{_escape(scan.domaine)} — Rapport de sécurité CyberScan', styles['CSTitle']),
-        Spacer(1, .5*cm),
-    ])
+    logo_cell = (
+        Image(logo, width=5.2*cm, height=1.3*cm)
+        if logo else Paragraph('CYBERSCAN', styles['CSHeading'])
+    )
+    title_style = styles['CSTitle'].clone(
+        'CSCoverInlineTitle', fontSize=16, leading=19, spaceAfter=0, alignment=TA_CENTER,
+    )
+    cover_header = Table([[
+        logo_cell,
+        Paragraph('Rapport de sécurité CyberScan', title_style),
+        _history_qr_block(doc.history_url),
+    ]], colWidths=[5.5*cm, 9.3*cm, 3.2*cm])
+    cover_header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'CENTER'),
+        ('ALIGN', (2, 0), (2, 0), 'RIGHT'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    story = [Spacer(1, .15*cm), cover_header, Spacer(1, 1.7*cm)]
+    raw_domain = str(scan.domaine or '').strip()
+    target_url = raw_domain if re.match(r'^https?://', raw_domain, re.IGNORECASE) else f'https://{raw_domain}'
     cover_rows = [
         ('Date et heure du scan', scan.date_scan.strftime('%d/%m/%Y à %H:%M') if scan.date_scan else '—'),
         ('Identifiant unique du scan', str(scan.id)),
         ('Client', getattr(scan.client, 'nom', None) or 'Non renseigné'),
     ]
+    cover_table_rows = [
+        [_cell('Information', styles, True), _cell('Valeur', styles, True)],
+        [_cell('URL', styles, True), _link_cell(target_url, styles, target_url)],
+        *[[_cell(label, styles, True), _cell(value, styles)] for label, value in cover_rows],
+    ]
     story.extend([
         _section_title(styles, 'Informations générales'),
-        _table_explanation('Ce tableau identifie le scan, sa date et le client concerné.', styles),
-        _table([[_cell('Information', styles, True), _cell('Valeur', styles, True)]] +
-               [[_cell(label, styles, True), _cell(value, styles)] for label, value in cover_rows],
-               [5.3*cm, 8.7*cm], styles), Spacer(1, .6*cm),
+        _table(cover_table_rows, [5.3*cm, 8.7*cm], styles),
+        Spacer(1, 1*cm),
     ])
     banner = Table([[_cell(
         f'NIVEAU DE RISQUE : {risk_label.upper()}\nScore IA : {risk_score:.1f}/10 — Score sécurité : {security_score:.1f}/10',
@@ -716,13 +773,14 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
         Paragraph(summary_intro, styles['CSBody']),
     ])
     summary_rows = _summary_table_rows(metrics, results.get('certificate') or {})
-    story.append(_table_explanation(
-        'Ce tableau résume les principales mesures de sécurité réellement observées pendant le scan.',
-        styles,
-    ))
+    summary_recommendation = (
+        findings[0]['recommendation']
+        if findings else 'Maintenir les contrôles actuels et programmer un nouveau scan périodique.'
+    )
     story.append(_table([[_cell('Mesure', styles, True), _cell('Valeur réelle', styles, True)]] +
                         [[_cell(label, styles), _cell(value, styles)] for label, value in summary_rows],
                         [8.2*cm, 8.5*cm], styles))
+    story.append(_table_recommendation(summary_recommendation, styles))
     story.append(Paragraph(summary_port, styles['CSBody']))
 
     story.append(_toc_heading('2. Méthodologie', styles))
@@ -732,11 +790,11 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     story.extend([
         _toc_heading('3. Inventaire technique', styles),
         Paragraph('Technologies détectées', styles['CSHeading']),
-        _table_explanation('Ce tableau recense les technologies détectées, leurs versions disponibles et les éléments techniques observés.', styles),
         _table(_technology_rows(results, styles), [4.2*cm, 3.3*cm, 9.2*cm], styles),
+        _table_recommendation('Maintenir un inventaire à jour et corriger ou mettre à niveau toute technologie obsolète ou non nécessaire.', styles),
         Paragraph('Ports exposés', styles['CSHeading']),
-        _table_explanation('Ce tableau présente les ports ouverts, leur état, le service associé et les détails retournés par Nmap.', styles),
         _table(_port_rows(results, styles), [2.8*cm, 2.6*cm, 4.6*cm, 6.7*cm], styles),
+        _table_recommendation('Limiter les ports ouverts aux seuls services indispensables et contrôler régulièrement leur exposition.', styles),
     ])
 
     story.append(_toc_heading('4. Indicateurs et analyse IA', styles))
@@ -746,10 +804,6 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     story.append(_toc_heading('5. Fiches vulnérabilité', styles))
     for finding in findings:
         story.append(Paragraph(_escape(finding['id']), styles['CSHeading']))
-        story.append(_table_explanation(
-            f"Ce tableau détaille le constat {finding['id']} : composant concerné, preuve, criticité et correction recommandée.",
-            styles,
-        ))
         fields = [
             ('Identifiant', finding['id']), ('Composant', finding['component']),
             ('Preuve', finding['evidence']), ('Score CVSS', f"{finding['score']:.1f}"),
@@ -759,6 +813,7 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
         story.append(_table([[_cell('Champ obligatoire', styles, True), _cell('Valeur issue du constat', styles, True)]] +
                             [[_cell(label, styles, True), _cell(value, styles)] for label, value in fields],
                             [5.2*cm, 11.5*cm], styles))
+        story.append(_table_recommendation(finding['recommendation'], styles))
 
     story.append(_section_title(styles, 'Plan de correction'))
     plan_rows = [[_cell('Priorité', styles, True), _cell('Identifiant / composant', styles, True), _cell('Action corrective', styles, True)]]
@@ -770,11 +825,11 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
         ])
     if not analysis['plan']:
         plan_rows.append([_cell('—', styles), _cell('Aucun constat', styles), _cell('Aucune action corrective déduite des résultats.', styles)])
-    story.append(_table_explanation(
-        'Ce tableau classe les actions correctives par priorité afin d’organiser la remédiation.',
+    story.append(_table(plan_rows, [3.2*cm, 5.2*cm, 8.3*cm], styles))
+    story.append(_table_recommendation(
+        'Appliquer d’abord les actions P1, documenter les corrections réalisées, puis relancer un scan de validation.',
         styles,
     ))
-    story.append(_table(plan_rows, [3.2*cm, 5.2*cm, 8.3*cm], styles))
 
     story.append(_section_title(styles, 'Annexe CVE'))
     cve_rows = [[
@@ -795,11 +850,13 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
             _cell('—', styles), _cell('—', styles), _cell('—', styles),
             _cell('Aucune CVE enregistrée dans ce scan.', styles), _cell('—', styles),
         ])
-    story.append(_table_explanation(
-        'Ce tableau répertorie les CVE officielles associées au scan et les informations enregistrées pour chacune.',
-        styles,
-    ))
     story.append(_table(cve_rows, [2.6*cm, 1.4*cm, 3.2*cm, 6.3*cm, 3.2*cm], styles))
+    cve_recommendation = (
+        'Appliquer les correctifs officiels des CVE recensées et confirmer les versions corrigées lors du prochain scan.'
+        if metrics['cve_records']
+        else 'Maintenir une veille NVD régulière afin de détecter rapidement toute nouvelle CVE applicable.'
+    )
+    story.append(_table_recommendation(cve_recommendation, styles))
 
     story.extend([
         PageBreak(), _toc_heading('6. Conclusion', styles),

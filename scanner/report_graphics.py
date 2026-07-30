@@ -33,8 +33,9 @@ def _cell(value, styles, bold=False):
     text = _escape('—' if value is None or value == '' else value).replace('\n', '<br/>')
     return Paragraph(f'<b>{text}</b>' if bold else text, styles['CSTableCell'])
 
-def _table_explanation(text, styles):
-    return Paragraph(f'<b>Lecture :</b> {_escape(text)}', styles['CSBody'])
+def _table_recommendation(text, styles):
+    recommendation_style = styles['CSBody'].clone('CSTableRecommendation', spaceBefore=8)
+    return Paragraph(f'<b>Recommandation :</b> {_escape(text)}', recommendation_style)
 
 
 def _table(rows, widths, repeat_rows=1):
@@ -382,26 +383,49 @@ def graphical_indicators(scan, results, findings, tools, styles):
             except (TypeError, ValueError):
                 continue
 
+    primary_recommendation = (
+        findings[0]['recommendation']
+        if findings else 'Maintenir les contrôles actuels et programmer un nouveau scan périodique.'
+    )
+    legacy_tls_enabled = any(
+        isinstance(protocol, dict)
+        and str(protocol.get('name') or '').upper() in {'TLSV1.0', 'TLSV1.1'}
+        and str(protocol.get('status') or '').lower() in {'enabled', 'supported', 'accepted'}
+        for protocol in (results.get('protocols') or [])
+    )
+    tls_recommendation = (
+        'Désactiver TLS 1.0 et TLS 1.1 et n’autoriser que TLS 1.2 ou TLS 1.3.'
+        if legacy_tls_enabled
+        else 'Maintenir TLS 1.0 et TLS 1.1 désactivés et privilégier TLS 1.3 lorsque les clients sont compatibles.'
+    )
+    certificate = results.get('certificate') or {}
+    if certificate.get('expired') is True:
+        certificate_recommendation = 'Renouveler immédiatement le certificat expiré et vérifier le déploiement de la chaîne complète.'
+    elif certificate:
+        certificate_recommendation = 'Surveiller la date d’expiration du certificat et automatiser son renouvellement avant échéance.'
+    else:
+        certificate_recommendation = 'Installer un certificat SSL valide et vérifier que sa chaîne de confiance est complète.'
+
     flowables = [
         Paragraph('Vue d’ensemble', styles['CSHeading']),
-        _table_explanation('Ce tableau de bord regroupe les indicateurs essentiels pour apprécier rapidement le niveau de risque et la surface exposée.', styles),
         _kpis(scan, results, findings, tools, styles, metrics),
+        _table_recommendation('Traiter en priorité les indicateurs critiques ou élevés et suivre leur évolution après correction.', styles),
         Spacer(1, 5),
-        _table_explanation('Ce tableau rapproche le niveau de risque, les constats prioritaires, la durée du scan et la recommandation principale.', styles),
         _summary(scan, results, findings, styles),
+        _table_recommendation(primary_recommendation, styles),
         Spacer(1, 6),
         PageBreak(),
         Paragraph('Sécurité SSL/TLS et exposition réseau', styles['CSHeading']),
-        _table_explanation('Ce tableau indique quelles versions TLS sont acceptées et précise leur niveau de sécurité ainsi que l’action recommandée.', styles),
         _tls_table(results, styles),
+        _table_recommendation(tls_recommendation, styles),
         Spacer(1, 6),
         Paragraph('Certificat SSL observé', styles['CSHeading']),
-        _table_explanation('Ce tableau présente la validité, l’identité, l’émetteur et les caractéristiques cryptographiques du certificat SSL.', styles),
         _certificate_table(results, styles),
+        _table_recommendation(certificate_recommendation, styles),
         Spacer(1, 6),
         Paragraph('Cipher Suites acceptées par SSLScan', styles['CSHeading']),
-        _table_explanation('Ce tableau détaille les suites cryptographiques acceptées, leur protocole, leur taille de clé et leur ordre de préférence.', styles),
         _cipher_table(results, styles),
+        _table_recommendation('Désactiver les suites cryptographiques faibles ou obsolètes et conserver uniquement des algorithmes modernes.', styles),
         Spacer(1, 6),
         _protocol_chart(results),
     ]
@@ -418,8 +442,8 @@ def graphical_indicators(scan, results, findings, tools, styles):
     flowables.extend([
         Spacer(1, 8),
         Paragraph('Statistiques techniques calculées', styles['CSHeading']),
-        _table_explanation('Ce tableau rassemble les caractéristiques techniques et les volumes mesurés pendant l’exécution du scan.', styles),
         _statistics(scan, results, findings, tools, styles, metrics),
+        _table_recommendation('Comparer ces statistiques entre les scans successifs afin de confirmer la réduction de la surface d’attaque.', styles),
     ])
     if timing_entries:
         flowables.extend([
@@ -430,22 +454,22 @@ def graphical_indicators(scan, results, findings, tools, styles):
     flowables.extend([
         Spacer(1, 8),
         Paragraph('Analyse IA', styles['CSHeading']),
-        _table_explanation('Ce tableau explique le score calculé, les sources analysées, la couverture obtenue et la priorité globale.', styles),
         _ai_box(analysis, styles),
+        _table_recommendation(primary_recommendation, styles),
         Spacer(1, 8),
         Paragraph('Posture de sécurité', styles['CSHeading']),
-        _table_explanation('Ce tableau compare les scores disponibles par domaine de sécurité afin de repérer les contrôles les plus faibles.', styles),
         _posture(results, findings, styles),
+        _table_recommendation('Renforcer en priorité les domaines dont le score est le plus faible, puis mesurer à nouveau leur posture.', styles),
         Spacer(1, 8),
         Paragraph('Bonnes pratiques et conformité', styles['CSHeading']),
-        _table_explanation('Ce tableau compare la configuration observée aux bonnes pratiques attendues et signale les écarts à corriger.', styles),
         _best_practices(results, styles),
+        _table_recommendation('Corriger chaque écart signalé, documenter la configuration cible et vérifier la conformité après déploiement.', styles),
     ])
     if results.get('compliance'):
         flowables.extend([
             Spacer(1, 8),
-            _table_explanation('Ce tableau synthétise le niveau de conformité communiqué pour chaque référentiel de sécurité.', styles),
             _compliance_table(results, styles),
+            _table_recommendation('Établir un plan de mise en conformité pour chaque référentiel incomplet ou non conforme.', styles),
         ])
     compliance_scores = _compliance_scores(results)
     if compliance_scores:

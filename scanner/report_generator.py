@@ -192,7 +192,8 @@ def _header_footer(canvas, doc):
     canvas.setFillColor(COLOR_WHITE)
     canvas.setFont('Helvetica', 8)
     canvas.drawString(15 * mm, 7 * mm, 'CyberScan — Rapport confidentiel')
-    canvas.drawRightString(page_w - 15 * mm, 7 * mm, f'Page {doc.page}')
+    if not getattr(canvas, '_cyberscan_total_pagination', False):
+        canvas.drawRightString(page_w - 15 * mm, 7 * mm, f'Page {doc.page}')
     # Ligne accent haut
     canvas.setStrokeColor(COLOR_ACCENT)
     canvas.setLineWidth(2)
