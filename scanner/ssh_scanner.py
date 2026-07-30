@@ -56,24 +56,64 @@ def classify_error(output, target):
     return None
 
 
-def run_sslscan(target, port=None):
-    try:
-        ssh = get_ssh_client()
-        endpoint = f"{target}:{port}" if port else target
-        _, stdout, stderr = ssh.exec_command(f"sslscan --connect-timeout=10 {endpoint}")
-        result = stdout.read().decode()
-        err = stderr.read().decode()
-        ssh.close()
+def run_sslscan(target, port=None, max_attempts=3):
+    endpoint = f"{target}:{port}" if port else target
+    command = f"sslscan --connect-timeout=20 --no-colour {shlex.quote(endpoint)}"
+    last_error = None
+    last_raw = ''
 
-        combined = result + err
-        error_type = classify_error(combined, target)
-        if error_type or not result.strip():
-            return {'success': False, 'error': error_type or 'Aucune réponse du serveur SSL', 'raw': combined}
-        return {'success': True, 'error': None, 'raw': result}
-    except paramiko.AuthenticationException:
-        return {'success': False, 'error': 'Erreur SSH: authentification VM échouée', 'raw': ''}
-    except Exception as e:
-        return {'success': False, 'error': f'Erreur connexion VM: {str(e)}', 'raw': ''}
+    for attempt in range(1, max_attempts + 1):
+        ssh = None
+        try:
+            ssh = get_ssh_client()
+            result, err, _exit_code = _run_ssh_command(ssh, command, timeout=90)
+            combined = result + err
+            error_type = classify_error(combined, target)
+            last_raw = combined
+            last_error = error_type or ('Aucune réponse du serveur SSL' if not result.strip() else None)
+
+            if last_error is None:
+                return {'success': True, 'error': None, 'raw': result}
+
+            retryable = (
+                last_error.startswith('TIMEOUT:')
+                or last_error == 'Aucune réponse du serveur SSL'
+            )
+            if not retryable or attempt == max_attempts:
+                return {'success': False, 'error': last_error, 'raw': combined}
+
+            logger.warning(
+                'sslscan_retry target=%s attempt=%s/%s error=%s',
+                target, attempt, max_attempts, last_error,
+            )
+            time.sleep(2 * attempt)
+        except paramiko.AuthenticationException:
+            return {
+                'success': False,
+                'error': 'Erreur SSH: authentification VM échouée',
+                'raw': last_raw,
+            }
+        except Exception as exc:
+            last_error = f'Erreur connexion VM: {str(exc)}'
+            if attempt == max_attempts:
+                return {'success': False, 'error': last_error, 'raw': last_raw}
+            logger.warning(
+                'sslscan_retry target=%s attempt=%s/%s error=%s',
+                target, attempt, max_attempts, last_error,
+            )
+            time.sleep(2 * attempt)
+        finally:
+            if ssh is not None:
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
+
+    return {
+        'success': False,
+        'error': last_error or 'Aucune réponse du serveur SSL',
+        'raw': last_raw,
+    }
 
 
 def run_nmap(target, port=None):

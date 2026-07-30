@@ -71,6 +71,29 @@ class RiskAndNarrativeConsistencyTests(SimpleTestCase):
         self.assertIn(findings[0]["component"], rendered_analysis)
         self.assertIn(findings[0]["recommendation"], rendered_analysis)
         self.assertNotIn("Non disponible", analysis["summary"] + analysis["conclusion"] + rendered_analysis)
+    def test_tls_conclusion_uses_observed_scan_state(self):
+        scan = SimpleNamespace(
+            id=159, domaine="esprit.tn", score_risque_ia=8.2,
+            cves=FakeCveManager([]), started_at=None, completed_at=None,
+        )
+        results = normalize_results({
+            "protocols": [
+                {"name": "TLSv1.0", "status": "enabled"},
+                {"name": "TLSv1.1", "status": "enabled"},
+                {"name": "TLSv1.2", "status": "secure"},
+            ],
+            "ports": [{"port": 443, "protocol": "tcp", "state": "open", "service": "https"}],
+            "certificate": {"status": "valid", "expired": False},
+        })
+
+        analysis = build_report_analysis(scan, results, [])
+
+        self.assertEqual(
+            analysis["conclusion"],
+            "Selon CyberScan, le niveau de risque élevé vient principalement d’une configuration TLS "
+            "trop permissive. Le certificat SSL est valide et le service HTTPS fonctionne correctement, "
+            "mais le serveur accepterait encore des protocoles et des algorithmes anciens.",
+        )
     def test_zero_score_distinguishes_no_findings_from_no_scanner_data(self):
         scan = SimpleNamespace(
             id=100, domaine="secure.example", score_risque_ia=0.0,

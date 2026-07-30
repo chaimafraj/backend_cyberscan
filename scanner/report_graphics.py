@@ -33,6 +33,9 @@ def _cell(value, styles, bold=False):
     text = _escape('—' if value is None or value == '' else value).replace('\n', '<br/>')
     return Paragraph(f'<b>{text}</b>' if bold else text, styles['CSTableCell'])
 
+def _table_explanation(text, styles):
+    return Paragraph(f'<b>Lecture :</b> {_escape(text)}', styles['CSBody'])
+
 
 def _table(rows, widths, repeat_rows=1):
     table = Table(rows, colWidths=widths, repeatRows=repeat_rows)
@@ -381,18 +384,23 @@ def graphical_indicators(scan, results, findings, tools, styles):
 
     flowables = [
         Paragraph('Vue d’ensemble', styles['CSHeading']),
+        _table_explanation('Ce tableau de bord regroupe les indicateurs essentiels pour apprécier rapidement le niveau de risque et la surface exposée.', styles),
         _kpis(scan, results, findings, tools, styles, metrics),
         Spacer(1, 5),
+        _table_explanation('Ce tableau rapproche le niveau de risque, les constats prioritaires, la durée du scan et la recommandation principale.', styles),
         _summary(scan, results, findings, styles),
         Spacer(1, 6),
         PageBreak(),
         Paragraph('Sécurité SSL/TLS et exposition réseau', styles['CSHeading']),
+        _table_explanation('Ce tableau indique quelles versions TLS sont acceptées et précise leur niveau de sécurité ainsi que l’action recommandée.', styles),
         _tls_table(results, styles),
         Spacer(1, 6),
         Paragraph('Certificat SSL observé', styles['CSHeading']),
+        _table_explanation('Ce tableau présente la validité, l’identité, l’émetteur et les caractéristiques cryptographiques du certificat SSL.', styles),
         _certificate_table(results, styles),
         Spacer(1, 6),
         Paragraph('Cipher Suites acceptées par SSLScan', styles['CSHeading']),
+        _table_explanation('Ce tableau détaille les suites cryptographiques acceptées, leur protocole, leur taille de clé et leur ordre de préférence.', styles),
         _cipher_table(results, styles),
         Spacer(1, 6),
         _protocol_chart(results),
@@ -410,6 +418,7 @@ def graphical_indicators(scan, results, findings, tools, styles):
     flowables.extend([
         Spacer(1, 8),
         Paragraph('Statistiques techniques calculées', styles['CSHeading']),
+        _table_explanation('Ce tableau rassemble les caractéristiques techniques et les volumes mesurés pendant l’exécution du scan.', styles),
         _statistics(scan, results, findings, tools, styles, metrics),
     ])
     if timing_entries:
@@ -421,16 +430,23 @@ def graphical_indicators(scan, results, findings, tools, styles):
     flowables.extend([
         Spacer(1, 8),
         Paragraph('Analyse IA', styles['CSHeading']),
+        _table_explanation('Ce tableau explique le score calculé, les sources analysées, la couverture obtenue et la priorité globale.', styles),
         _ai_box(analysis, styles),
         Spacer(1, 8),
         Paragraph('Posture de sécurité', styles['CSHeading']),
+        _table_explanation('Ce tableau compare les scores disponibles par domaine de sécurité afin de repérer les contrôles les plus faibles.', styles),
         _posture(results, findings, styles),
         Spacer(1, 8),
         Paragraph('Bonnes pratiques et conformité', styles['CSHeading']),
+        _table_explanation('Ce tableau compare la configuration observée aux bonnes pratiques attendues et signale les écarts à corriger.', styles),
         _best_practices(results, styles),
     ])
     if results.get('compliance'):
-        flowables.extend([Spacer(1, 8), _compliance_table(results, styles)])
+        flowables.extend([
+            Spacer(1, 8),
+            _table_explanation('Ce tableau synthétise le niveau de conformité communiqué pour chaque référentiel de sécurité.', styles),
+            _compliance_table(results, styles),
+        ])
     compliance_scores = _compliance_scores(results)
     if compliance_scores:
         flowables.extend([Spacer(1, 6), _bars('Niveau de conformité (%)', compliance_scores)])

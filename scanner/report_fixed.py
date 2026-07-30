@@ -516,6 +516,9 @@ def _cell(value, styles, bold=False):
     text = _escape(value).replace('\n', '<br/>')
     return Paragraph(f'<b>{text}</b>' if bold else text, styles['CSTableCell'])
 
+def _table_explanation(text, styles):
+    return Paragraph(f'<b>Lecture :</b> {_escape(text)}', styles['CSBody'])
+
 
 def _link_cell(url, styles):
     safe_url = _escape(url)
@@ -552,6 +555,89 @@ def _port_rows(results, styles):
         rows.append([_cell('—', styles), _cell('Aucun port ouvert extrait', styles), _cell('—', styles), _cell('—', styles)])
     return rows
 
+
+FRENCH_MONTHS = (
+    '', 'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+    'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
+)
+
+
+def _french_decimal(value):
+    return f'{float(value):.1f}'.replace('.', ',')
+
+
+def _summary_table_rows(metrics, certificate):
+    severity = metrics['severity']
+
+    def label(count, singular, plural):
+        return singular if count in (0, 1) else plural
+
+    if not certificate:
+        certificate_count = 0
+        certificate_label = 'Certificat SSL détecté'
+    elif certificate.get('expired') is True:
+        certificate_count = 1
+        certificate_label = 'Certificat SSL expiré'
+    elif certificate.get('expired') is False:
+        certificate_count = 1
+        certificate_label = 'Certificat SSL valide'
+    else:
+        certificate_count = 1
+        certificate_label = 'Certificat SSL présent'
+
+    return [
+        (label(severity['Élevé'], 'Vulnérabilité élevée', 'Vulnérabilités élevées'), severity['Élevé']),
+        (label(severity['Critique'], 'Vulnérabilité critique', 'Vulnérabilités critiques'), severity['Critique']),
+        (label(metrics['cves'], 'CVE officielle', 'CVE officielles'), metrics['cves']),
+        (label(metrics['port_count'], 'Port ouvert', 'Ports ouverts'), metrics['port_count']),
+        (label(metrics['service_count'], 'Service détecté', 'Services détectés'), metrics['service_count']),
+        (label(metrics['technology_count'], 'Technologie', 'Technologies'), metrics['technology_count']),
+        (label(metrics['tls_count'], 'Version TLS', 'Versions TLS'), metrics['tls_count']),
+        (label(metrics['cipher_count'], 'Suite cryptographique', 'Suites cryptographiques'), metrics['cipher_count']),
+        (certificate_label, certificate_count),
+    ]
+
+def _summary_paragraphs(scan, risk_label, risk_score, security_score, metrics):
+    if scan.date_scan:
+        scan_date = (
+            f'{scan.date_scan.day} {FRENCH_MONTHS[scan.date_scan.month]} '
+            f'{scan.date_scan.year} à {scan.date_scan:%H:%M}'
+        )
+    else:
+        scan_date = 'date non renseignée'
+
+    intro = (
+        'Le rapport présente un audit de sécurité du domaine '
+        f'<b>{_escape(scan.domaine)}</b>, réalisé le <b>{_escape(scan_date)}</b>, '
+        f"sous l'identifiant de scan <b>{scan.id}</b>. Le document classe le niveau de risque "
+        f'comme <b>{_escape(risk_label)}</b>, avec un <b>score IA de '
+        f'{_french_decimal(risk_score)}/10</b> et un <b>score de sécurité de '
+        f'{_french_decimal(security_score)}/10</b>.'
+    )
+
+    ports = metrics.get('ports') or []
+    if len(ports) == 1:
+        port = ports[0]
+        port_number = int(port['port'])
+        service = str(port.get('service') or 'non identifié').strip().upper()
+        port_text = (
+            f'Le seul port ouvert détecté est le <b>port {port_number}</b>, utilisé pour le '
+            f'service <b>{_escape(service)}</b>.'
+        )
+        if port_number == 443 and service == 'HTTPS':
+            port_text += ' Cette ouverture est normale pour un site web sécurisé.'
+        else:
+            port_text += ' Cette exposition doit être vérifiée et justifiée selon le besoin du service.'
+    elif ports:
+        exposed = ', '.join(
+            f"{int(item['port'])} ({str(item.get('service') or 'non identifié').upper()})"
+            for item in ports
+        )
+        port_text = f'Les ports ouverts détectés sont : <b>{_escape(exposed)}</b>.'
+    else:
+        port_text = 'Aucun port ouvert n’a été détecté dans les résultats disponibles.'
+
+    return intro, port_text
 
 def _cached_report(scan):
     media_root = Path(getattr(settings, 'MEDIA_ROOT', settings.BASE_DIR / 'media'))
@@ -602,6 +688,7 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     ]
     story.extend([
         _section_title(styles, 'Informations générales'),
+        _table_explanation('Ce tableau identifie le scan, sa date et le client concerné.', styles),
         _table([[_cell('Information', styles, True), _cell('Valeur', styles, True)]] +
                [[_cell(label, styles, True), _cell(value, styles)] for label, value in cover_rows],
                [5.3*cm, 8.7*cm], styles), Spacer(1, .6*cm),
@@ -621,20 +708,22 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     toc.levelStyles = [ParagraphStyle('TOCLevel0', parent=styles['CSBody'], fontSize=10, leading=15, leftIndent=8, textColor=COLOR_PRIMARY)]
     story.extend([Paragraph('Sommaire', styles['CSTitle']), Spacer(1, 8), toc, PageBreak()])
 
+    summary_intro, summary_port = _summary_paragraphs(
+        scan, risk_label, risk_score, security_score, metrics,
+    )
     story.extend([
         _toc_heading('1. Synthèse analytique', styles),
-        Paragraph(_escape(analysis['summary']), styles['CSBody']),
+        Paragraph(summary_intro, styles['CSBody']),
     ])
-    summary_rows = [
-        ('Vulnérabilités', metrics['findings']), ('CVE', metrics['cves']),
-        ('Critiques', metrics['severity']['Critique']), ('Élevées', metrics['severity']['Élevé']),
-        ('Moyennes', metrics['severity']['Moyen']), ('Faibles', metrics['severity']['Faible']),
-        ('Ports / services', f"{metrics['port_count']} / {metrics['service_count']}"),
-        ('Technologies / outils', f"{metrics['technology_count']} / {metrics['tool_count']}"),
-    ]
+    summary_rows = _summary_table_rows(metrics, results.get('certificate') or {})
+    story.append(_table_explanation(
+        'Ce tableau résume les principales mesures de sécurité réellement observées pendant le scan.',
+        styles,
+    ))
     story.append(_table([[_cell('Mesure', styles, True), _cell('Valeur réelle', styles, True)]] +
                         [[_cell(label, styles), _cell(value, styles)] for label, value in summary_rows],
                         [8.2*cm, 8.5*cm], styles))
+    story.append(Paragraph(summary_port, styles['CSBody']))
 
     story.append(_toc_heading('2. Méthodologie', styles))
     for tool in active_tools:
@@ -643,8 +732,10 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     story.extend([
         _toc_heading('3. Inventaire technique', styles),
         Paragraph('Technologies détectées', styles['CSHeading']),
+        _table_explanation('Ce tableau recense les technologies détectées, leurs versions disponibles et les éléments techniques observés.', styles),
         _table(_technology_rows(results, styles), [4.2*cm, 3.3*cm, 9.2*cm], styles),
         Paragraph('Ports exposés', styles['CSHeading']),
+        _table_explanation('Ce tableau présente les ports ouverts, leur état, le service associé et les détails retournés par Nmap.', styles),
         _table(_port_rows(results, styles), [2.8*cm, 2.6*cm, 4.6*cm, 6.7*cm], styles),
     ])
 
@@ -655,6 +746,10 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
     story.append(_toc_heading('5. Fiches vulnérabilité', styles))
     for finding in findings:
         story.append(Paragraph(_escape(finding['id']), styles['CSHeading']))
+        story.append(_table_explanation(
+            f"Ce tableau détaille le constat {finding['id']} : composant concerné, preuve, criticité et correction recommandée.",
+            styles,
+        ))
         fields = [
             ('Identifiant', finding['id']), ('Composant', finding['component']),
             ('Preuve', finding['evidence']), ('Score CVSS', f"{finding['score']:.1f}"),
@@ -675,6 +770,10 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
         ])
     if not analysis['plan']:
         plan_rows.append([_cell('—', styles), _cell('Aucun constat', styles), _cell('Aucune action corrective déduite des résultats.', styles)])
+    story.append(_table_explanation(
+        'Ce tableau classe les actions correctives par priorité afin d’organiser la remédiation.',
+        styles,
+    ))
     story.append(_table(plan_rows, [3.2*cm, 5.2*cm, 8.3*cm], styles))
 
     story.append(_section_title(styles, 'Annexe CVE'))
@@ -696,6 +795,10 @@ def generate_fixed_pdf_for_scan(scan, force_regenerate=False):
             _cell('—', styles), _cell('—', styles), _cell('—', styles),
             _cell('Aucune CVE enregistrée dans ce scan.', styles), _cell('—', styles),
         ])
+    story.append(_table_explanation(
+        'Ce tableau répertorie les CVE officielles associées au scan et les informations enregistrées pour chacune.',
+        styles,
+    ))
     story.append(_table(cve_rows, [2.6*cm, 1.4*cm, 3.2*cm, 6.3*cm, 3.2*cm], styles))
 
     story.extend([

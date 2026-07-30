@@ -92,7 +92,33 @@ def build_report_analysis(scan, results, findings):
             "severity": "Information",
         })
 
-    if ordered:
+    legacy_tls_enabled = any(
+        str(protocol.get("name") or "").upper() in {"TLSV1.0", "TLSV1.1"}
+        and str(protocol.get("status") or "").lower() in {"enabled", "supported", "accepted"}
+        for protocol in (results.get("protocols") or [])
+        if isinstance(protocol, dict)
+    )
+    certificate_valid = (
+        certificate.get("expired") is False
+        or str(certificate.get("status") or "").lower() == "valid"
+    )
+    https_available = any(
+        str(port.get("port") or "") == "443"
+        and str(port.get("service") or "").lower() == "https"
+        and str(port.get("state") or "open").lower() == "open"
+        for port in (metrics.get("ports") or [])
+        if isinstance(port, dict)
+    )
+
+    tls_conclusion = legacy_tls_enabled and certificate_valid and https_available
+    if tls_conclusion:
+        conclusion = (
+            f"Selon CyberScan, le niveau de risque {level.lower()} vient principalement d’une "
+            "configuration TLS trop permissive. Le certificat SSL est valide et le service HTTPS "
+            "fonctionne correctement, mais le serveur accepterait encore des protocoles et des "
+            "algorithmes anciens."
+        )
+    elif ordered:
         top_ids = _joined((item["id"] for item in top), "")
         conclusion = (
             f"Le scan de {scan.domaine} établit un risque {level.lower()} ({score:.1f}/10) "
@@ -105,13 +131,12 @@ def build_report_analysis(scan, results, findings):
             f"Le scan de {scan.domaine} établit un risque {level.lower()} ({score:.1f}/10) "
             "sans vulnérabilité significative extraite des résultats disponibles."
         )
-    if execution_issues:
+    if execution_issues and not tls_conclusion:
         conclusion += (
             " La couverture reste partielle car "
             + ", ".join(item["tool"] for item in execution_issues)
             + " n’a pas retourné un résultat exploitable; ces outils doivent être relancés."
         )
-
     return {
         "score": score,
         "level": level,

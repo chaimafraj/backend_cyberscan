@@ -94,3 +94,53 @@ class RunSshCommandTests(SimpleTestCase):
 
         cleanup.assert_called_once_with()
         self.assertTrue(channel.closed)
+
+class RunSslscanRetryTests(SimpleTestCase):
+    @patch('scanner.ssh_scanner.time.sleep')
+    @patch('scanner.ssh_scanner._run_ssh_command')
+    @patch('scanner.ssh_scanner.get_ssh_client')
+    def test_retries_timeout_then_returns_success(self, get_ssh, run_command, sleep):
+        ssh = Mock()
+        get_ssh.return_value = ssh
+        run_command.side_effect = [
+            ('', 'connect timeout', 1),
+            ('Version: 2.1.5\nConnected to 196.203.216.18\n', '', 0),
+        ]
+
+        from .ssh_scanner import run_sslscan
+        result = run_sslscan('esprit.tn')
+
+        self.assertTrue(result['success'])
+        self.assertEqual(run_command.call_count, 2)
+        sleep.assert_called_once_with(2)
+        self.assertEqual(ssh.close.call_count, 2)
+
+    @patch('scanner.ssh_scanner.time.sleep')
+    @patch('scanner.ssh_scanner._run_ssh_command')
+    @patch('scanner.ssh_scanner.get_ssh_client')
+    def test_does_not_retry_non_transient_dns_error(self, get_ssh, run_command, sleep):
+        get_ssh.return_value = Mock()
+        run_command.return_value = ('', 'Could not resolve hostname', 1)
+
+        from .ssh_scanner import run_sslscan
+        result = run_sslscan('missing.example')
+
+        self.assertFalse(result['success'])
+        self.assertIn('DOMAINE INTROUVABLE', result['error'])
+        run_command.assert_called_once()
+        sleep.assert_not_called()
+
+    @patch('scanner.ssh_scanner.time.sleep')
+    @patch('scanner.ssh_scanner._run_ssh_command')
+    @patch('scanner.ssh_scanner.get_ssh_client')
+    def test_returns_timeout_after_three_attempts(self, get_ssh, run_command, sleep):
+        get_ssh.return_value = Mock()
+        run_command.return_value = ('', 'connection timed out', 1)
+
+        from .ssh_scanner import run_sslscan
+        result = run_sslscan('slow.example')
+
+        self.assertFalse(result['success'])
+        self.assertIn('TIMEOUT', result['error'])
+        self.assertEqual(run_command.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
