@@ -194,6 +194,10 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+# Sous Windows, le pool prefork bloque ou redemarre les processus enfants.
+# Le pool solo garantit l'execution fiable des scans dans le worker dedie.
+CELERY_WORKER_POOL = config('CELERY_WORKER_POOL', default='solo')
+CELERY_WORKER_CONCURRENCY = config('CELERY_WORKER_CONCURRENCY', default=1, cast=int)
 CELERY_TASK_TIME_LIMIT = config('CELERY_TASK_TIME_LIMIT', default=1800, cast=int)
 CELERY_TASK_SOFT_TIME_LIMIT = config('CELERY_TASK_SOFT_TIME_LIMIT', default=1740, cast=int)
 
