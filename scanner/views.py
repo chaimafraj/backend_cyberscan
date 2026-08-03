@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import Scan, Client
 from .scan_cancellation import ScanCancelled
-from .serializers import ScanSerializer
+from .serializers import ScanDetailSerializer, ScanSerializer
 from .ssh_scanner import run_sslscan, run_nmap, run_openssl, run_whatweb, run_ssllabs, run_zap, parse_target
 from .nvd_service import enrich_scan_with_nvd
 from .cve_data import normalize_cve_id, normalize_cve_record, nvd_url_for
@@ -102,6 +102,24 @@ def parse_sslscan(raw_output):
 def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel_check=None):
     scan_started = time.monotonic()
     options = options or {}
+    tool_executions = {}
+
+    def run_measured(tool_name, operation, *args, **kwargs):
+        started_at = timezone.now()
+        started_monotonic = time.monotonic()
+        succeeded = False
+        try:
+            result = operation(*args, **kwargs)
+            succeeded = not isinstance(result, dict) or result.get('success', True) is not False
+            return result
+        finally:
+            completed_at = timezone.now()
+            tool_executions[tool_name] = {
+                'started_at': started_at.isoformat(),
+                'completed_at': completed_at.isoformat(),
+                'duration_seconds': round(time.monotonic() - started_monotonic, 3),
+                'success': succeeded,
+            }
 
     def ensure_not_cancelled():
         if cancel_check is None:
@@ -116,7 +134,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
     # La cible peut être un domaine, une IP, ou un format "host:port".
     # Si un port est présent, il remplace le port 443 par défaut des outils.
     host, port = parse_target(target)
-    sslscan_result = run_sslscan(host, port)
+    sslscan_result = run_measured('sslscan', run_sslscan, host, port)
     ensure_not_cancelled()
 
     if not sslscan_result['success']:
@@ -129,15 +147,16 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
             'vulnerabilities': [],
             'cves': [],
             'scan_duration_seconds': round(time.monotonic() - scan_started, 3),
+            'tool_executions': tool_executions,
         }
 
-    nmap_result = run_nmap(host, port)
+    nmap_result = run_measured('nmap', run_nmap, host, port)
     ensure_not_cancelled()
-    openssl_result = run_openssl(host, port)
+    openssl_result = run_measured('openssl', run_openssl, host, port)
     ensure_not_cancelled()
-    whatweb_result = run_whatweb(host, port)
+    whatweb_result = run_measured('whatweb', run_whatweb, host, port)
     ensure_not_cancelled()
-    ssllabs_result = run_ssllabs(host)
+    ssllabs_result = run_measured('ssllabs', run_ssllabs, host)
     ensure_not_cancelled()
 
     # ─── 🔎 API NVD (optionnelle via options={"nvd": true}) ───
@@ -147,7 +166,9 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
     # repérées dans les sorties brutes Nmap / OpenSSL.
     nvd_result = {'success': True, 'requested': False, 'errors': [], 'cves': []}
     if options.get("nvd", False) == True:
-        nvd_result = enrich_scan_with_nvd(
+        nvd_result = run_measured(
+            'nvd',
+            enrich_scan_with_nvd,
             whatweb_result=whatweb_result,
             nmap_raw=nmap_result.get('raw', ''),
             openssl_raw=openssl_result.get('raw', ''),
@@ -182,7 +203,9 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
     # explicite via options={"zap": false}.
     zap_result = {'success': False, 'findings': [], 'raw': '', 'error': 'ZAP désactivé'}
     if options.get("zap", True):
-        zap_result = run_zap(host, port=port, cancel_check=cancel_check)
+        zap_result = run_measured(
+            'zap', run_zap, host, port=port, cancel_check=cancel_check,
+        )
 
     zap_findings = zap_result.get('findings', []) if zap_result.get('success') else []
     score_ia = scorer_rf.calculate_scan_score(
@@ -287,6 +310,7 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
         'network_metadata': network_metadata,
         'web_server': web_server,
         'scan_duration_seconds': round(time.monotonic() - scan_started, 3),
+        'tool_executions': tool_executions,
         'nuclei_findings': nuclei_findings,
         'nuclei_raw': nuclei_result.get('raw', ''),
         'nuclei_success': nuclei_result.get('success', False),
@@ -513,7 +537,7 @@ def scan_detail(request, pk):
             return Response({'error': 'Accès refusé'}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == 'GET':
-        serializer = ScanSerializer(scan)
+        serializer = ScanDetailSerializer(scan)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     if request.method == 'PUT':

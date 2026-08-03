@@ -118,6 +118,7 @@ CYBERSCAN_HISTORY_URL = os.environ.get(
     'CYBERSCAN_HISTORY_URL',
     f"{CYBERSCAN_SITE_URL.rstrip('/')}/historique",
 )
+REPORT_EMAIL_LINK_MAX_AGE = int(os.environ.get('REPORT_EMAIL_LINK_MAX_AGE', 7 * 24 * 60 * 60))
 
 # Frontend Angular autorise a appeler l'API Django en developpement.
 # Une origine ne contient pas de slash final.

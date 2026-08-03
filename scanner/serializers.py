@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Scan, CVE, User, VulnerabiliteManuelle, Notification
 from .cve_data import collect_scan_cves
+from .report_data import extract_duration_seconds
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 
@@ -86,6 +87,54 @@ class ScanSerializer(serializers.ModelSerializer):
 
     def get_has_rapport(self, obj):
         return obj.rapports.exists()
+
+
+class ScanDetailSerializer(ScanSerializer):
+    duration_seconds = serializers.SerializerMethodField()
+    email_status = serializers.SerializerMethodField()
+    report_status = serializers.SerializerMethodField()
+    timeline = serializers.SerializerMethodField()
+
+    class Meta(ScanSerializer.Meta):
+        fields = ScanSerializer.Meta.fields + [
+            'duration_seconds', 'email_status', 'report_status', 'timeline',
+        ]
+
+    def get_duration_seconds(self, obj):
+        results = obj.resultats_ssl if isinstance(obj.resultats_ssl, dict) else {}
+        return extract_duration_seconds(obj, results)
+
+    def get_email_status(self, obj):
+        notifications = obj.notifications
+        if notifications.filter(type='report_emailed').exists():
+            return 'envoye'
+        if notifications.filter(type='email_failed').exists():
+            return 'erreur'
+        return 'non_envoye'
+
+    def get_report_status(self, obj):
+        return 'pret' if obj.rapports.exists() else 'non_genere'
+
+    def get_timeline(self, obj):
+        labels = {
+            'scan.queued': 'Scan mis en file',
+            'scan.running': 'Scan lance',
+            'scan.completed': 'Scan termine',
+            'scan.failed': 'Echec du scan',
+            'scan.cancelled': 'Scan annule',
+            'report.created': 'Rapport genere',
+        }
+        items = []
+        for event in obj.realtime_events.order_by('created_at'):
+            label = labels.get(event.event_type)
+            if label:
+                items.append({
+                    'type': event.event_type,
+                    'label': label,
+                    'timestamp': event.created_at,
+                    'payload': event.payload,
+                })
+        return items
 
 
 class NotificationSerializer(serializers.ModelSerializer):

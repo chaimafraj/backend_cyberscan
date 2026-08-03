@@ -201,6 +201,18 @@ class ScannerCveEvidenceTests(SimpleTestCase):
             for item in reversed(patches):
                 item.stop()
 
+    def test_scan_records_real_execution_metadata_for_each_tool(self):
+        result = self.run_scan("TLSv1.2 enabled")
+
+        self.assertEqual(
+            set(result["tool_executions"]),
+            {"sslscan", "nmap", "openssl", "whatweb", "ssllabs"},
+        )
+        for execution in result["tool_executions"].values():
+            self.assertIn("started_at", execution)
+            self.assertIn("completed_at", execution)
+            self.assertGreaterEqual(execution["duration_seconds"], 0)
+            self.assertTrue(execution["success"])
     def test_tls_10_signal_is_not_mislabeled_as_poodle_cve(self):
         result = self.run_scan("TLSv1.0 enabled\nTLSv1.2 enabled")
 

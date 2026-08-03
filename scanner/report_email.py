@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from typing import Any, Dict, List, Optional
 
 from django.conf import settings
+from django.core import signing
 from django.core.mail import EmailMessage
 
 from .models import Rapport, Scan
@@ -21,6 +23,15 @@ from .report_generator import (
 )
 
 logger = logging.getLogger(__name__)
+
+REPORT_DOWNLOAD_SALT = 'cyberscan.report-email-download'
+
+
+def _with_query_parameter(url: str, name: str, value: object) -> str:
+    parts = urlsplit(url)
+    query = [(key, item) for key, item in parse_qsl(parts.query, keep_blank_values=True) if key != name]
+    query.append((name, str(value)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _notify_email_status(scan, result):
@@ -80,14 +91,19 @@ def resolve_recipient_emails(scan: Scan, extra_emails: Optional[List[str]] = Non
 
 def build_report_url(scan: Scan) -> str:
     site_url = getattr(settings, 'CYBERSCAN_SITE_URL', 'http://localhost:4200').rstrip('/')
-    api_base = getattr(settings, 'CYBERSCAN_API_URL', 'http://localhost:8000').rstrip('/')
-    return f'{site_url}/scans/{scan.id}/rapport'
+    history_url = getattr(
+        settings,
+        'CYBERSCAN_HISTORY_URL',
+        f'{site_url}/historique',
+    )
+    return _with_query_parameter(history_url, 'scan', scan.id)
 
 
 def build_api_report_url(scan: Scan) -> str:
     api_base = getattr(settings, 'CYBERSCAN_API_URL', 'http://localhost:8000').rstrip('/')
-    return f'{api_base}/api/scans/{scan.id}/rapport/'
-
+    token = signing.dumps({'scan_id': scan.id}, salt=REPORT_DOWNLOAD_SALT)
+    base_url = f'{api_base}/api/scans/{scan.id}/rapport/email-download/'
+    return _with_query_parameter(base_url, 'token', token)
 
 def build_email_subject(scan: Scan, context: Optional[dict] = None) -> str:
     ctx = context or build_report_context(scan)

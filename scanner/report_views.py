@@ -7,9 +7,11 @@ import io
 import logging
 from pathlib import Path
 
-from django.http import FileResponse, Http404
+from django.conf import settings
+from django.core import signing
+from django.http import FileResponse, Http404, HttpResponse
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
@@ -162,6 +164,82 @@ def scan_rapport_download(request, pk):
     )
     return response
 
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def scan_report_email_download(request, pk):
+    """Telechargement public protege par un jeton signe et temporaire."""
+    from .report_email import REPORT_DOWNLOAD_SALT
+
+    token = request.query_params.get('token')
+    if not token:
+        return Response({'error': 'Jeton manquant'}, status=status.HTTP_403_FORBIDDEN)
+
+    max_age = getattr(settings, 'REPORT_EMAIL_LINK_MAX_AGE', 7 * 24 * 60 * 60)
+    try:
+        payload = signing.loads(token, salt=REPORT_DOWNLOAD_SALT, max_age=max_age)
+    except signing.SignatureExpired:
+        return Response({'error': 'Lien expire'}, status=status.HTTP_410_GONE)
+    except signing.BadSignature:
+        return Response({'error': 'Lien invalide'}, status=status.HTTP_403_FORBIDDEN)
+
+    if int(payload.get('scan_id', -1)) != int(pk):
+        return Response({'error': 'Lien invalide'}, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        scan = Scan.objects.get(pk=pk)
+    except Scan.DoesNotExist:
+        return Response({'error': 'Scan introuvable'}, status=status.HTTP_404_NOT_FOUND)
+
+    rapport = _latest_rapport(scan)
+    if rapport is None:
+        try:
+            rapport = generate_pdf_for_scan(scan)
+        except Exception as exc:
+            logger.exception('Generation du PDF via lien email echouee scan #%s', scan.id)
+            return Response(
+                {'error': f'Rapport PDF indisponible: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    pdf_path = resolve_pdf_absolute_path(rapport)
+    if not pdf_path.is_file():
+        return Response({'error': 'Fichier PDF introuvable'}, status=status.HTTP_404_NOT_FOUND)
+
+    return FileResponse(
+        open(pdf_path, 'rb'),
+        content_type='application/pdf',
+        as_attachment=True,
+        filename=pdf_path.name,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def scan_report_qr(request, pk):
+    """Retourne un QR Code SVG pointant vers le rapport du scan."""
+    from reportlab.graphics import renderSVG
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    from .report_email import build_report_url
+
+    scan, err = _get_scan_or_error(request, pk)
+    if err:
+        return err
+
+    qr = QrCodeWidget(build_report_url(scan))
+    x1, y1, x2, y2 = qr.getBounds()
+    width, height = x2 - x1, y2 - y1
+    size = 220
+    drawing = Drawing(
+        size,
+        size,
+        transform=[size / width, 0, 0, size / height, 0, 0],
+    )
+    drawing.add(qr)
+    svg = renderSVG.drawToString(drawing)
+    return HttpResponse(svg, content_type='image/svg+xml')
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
