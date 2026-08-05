@@ -21,6 +21,7 @@ def build_stored_results(result: dict[str, Any]) -> dict[str, Any]:
         "risk_decision": result.get("risk_decision", {}),
         "scan_duration_seconds": result.get("scan_duration_seconds"),
         "tool_executions": result.get("tool_executions", {}),
+        "scanner_errors": result.get("scanner_errors", {}),
         "protocols": result.get("protocols", []),
         "vulnerabilities": result.get("vulnerabilities", []),
         "nuclei_findings": result.get("nuclei_findings", []),

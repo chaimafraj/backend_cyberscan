@@ -186,6 +186,16 @@ DEFAULT_FROM_EMAIL = config(
 )
 EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
 
+# Scanner VM accessed by Paramiko. Keep credentials in the environment rather
+# than in source control, and make network timeouts explicit.
+SSH_HOST = config('SSH_HOST', default='')
+SSH_PORT = config('SSH_PORT', default=22, cast=int)
+SSH_USER = config('SSH_USER', default='')
+SSH_PASSWORD = config('SSH_PASSWORD', default='')
+SSH_CONNECT_TIMEOUT = config('SSH_CONNECT_TIMEOUT', default=15, cast=int)
+SSH_COMMAND_TIMEOUT = config('SSH_COMMAND_TIMEOUT', default=60, cast=int)
+SSH_AUTO_ADD_HOST_KEY = config('SSH_AUTO_ADD_HOST_KEY', default=False, cast=bool)
+
 # Les scans asynchrones créent les notifications dans le worker Celery.
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/0')
 CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://127.0.0.1:6379/1')

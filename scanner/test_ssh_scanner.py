@@ -1,10 +1,48 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from .scan_cancellation import ScanCancelled
-from .ssh_scanner import _run_ssh_command
+from .ssh_scanner import _run_ssh_command, get_ssh_client, run_sslscan
+
+
+class GetSshClientTests(SimpleTestCase):
+    @override_settings(
+        SSH_HOST='scanner.internal',
+        SSH_PORT=2222,
+        SSH_USER='scanner-user',
+        SSH_PASSWORD='scanner-password',
+        SSH_CONNECT_TIMEOUT=7,
+        SSH_AUTO_ADD_HOST_KEY=False,
+    )
+    @patch('scanner.ssh_scanner.paramiko.SSHClient')
+    def test_uses_django_settings_and_rejects_unknown_host_keys(self, client_class):
+        client = client_class.return_value
+
+        result = get_ssh_client()
+
+        self.assertIs(result, client)
+        client.load_system_host_keys.assert_called_once_with()
+        policy = client.set_missing_host_key_policy.call_args.args[0]
+        self.assertEqual(policy.__class__.__name__, 'RejectPolicy')
+        client.connect.assert_called_once_with(
+            hostname='scanner.internal',
+            port=2222,
+            username='scanner-user',
+            password='scanner-password',
+            timeout=7,
+            auth_timeout=7,
+            banner_timeout=7,
+        )
+
+    @override_settings(SSH_HOST='', SSH_USER='', SSH_PASSWORD='')
+    @patch('scanner.ssh_scanner.paramiko.SSHClient')
+    def test_rejects_incomplete_configuration_before_connecting(self, client_class):
+        with self.assertRaisesRegex(RuntimeError, 'Configuration SSH incomplete'):
+            get_ssh_client()
+
+        client_class.assert_not_called()
 
 
 class BufferedChannel:
@@ -96,6 +134,32 @@ class RunSshCommandTests(SimpleTestCase):
         self.assertTrue(channel.closed)
 
 class RunSslscanRetryTests(SimpleTestCase):
+    @patch('scanner.ssh_scanner._run_ssh_command')
+    @patch('scanner.ssh_scanner.get_ssh_client')
+    def test_global_timeout_stops_without_retrying(self, get_ssh, run_command):
+        get_ssh.return_value = Mock()
+        run_command.return_value = ('partial output', '', 124)
+
+        result = run_sslscan('slow.example')
+
+        self.assertFalse(result['success'])
+        self.assertIn('sslscan', result['error'])
+        self.assertEqual(run_command.call_count, 1)
+        remote_command = run_command.call_args.args[1]
+        self.assertIn('timeout --signal=TERM', remote_command)
+        self.assertIn('--ipv4', remote_command)
+
+    @patch('scanner.ssh_scanner._run_ssh_command', side_effect=ScanCancelled('cancelled'))
+    @patch('scanner.ssh_scanner.get_ssh_client')
+    def test_propagates_cancellation_to_running_command(self, get_ssh, run_command):
+        cancel_check = Mock(return_value=True)
+        get_ssh.return_value = Mock()
+
+        with self.assertRaises(ScanCancelled):
+            run_sslscan('esprit.tn', cancel_check=cancel_check)
+
+        self.assertIs(run_command.call_args.kwargs['cancel_check'], cancel_check)
+
     @patch('scanner.ssh_scanner.time.sleep')
     @patch('scanner.ssh_scanner._run_ssh_command')
     @patch('scanner.ssh_scanner.get_ssh_client')

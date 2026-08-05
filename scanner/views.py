@@ -134,21 +134,10 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
     # La cible peut être un domaine, une IP, ou un format "host:port".
     # Si un port est présent, il remplace le port 443 par défaut des outils.
     host, port = parse_target(target)
-    sslscan_result = run_measured('sslscan', run_sslscan, host, port)
+    sslscan_result = run_measured(
+        'sslscan', run_sslscan, host, port, cancel_check=cancel_check,
+    )
     ensure_not_cancelled()
-
-    if not sslscan_result['success']:
-        return {
-            'domaine': target,
-            'success': False,
-            'error': sslscan_result['error'],
-            'score_risque_ia': None,
-            'protocols': [],
-            'vulnerabilities': [],
-            'cves': [],
-            'scan_duration_seconds': round(time.monotonic() - scan_started, 3),
-            'tool_executions': tool_executions,
-        }
 
     nmap_result = run_measured('nmap', run_nmap, host, port)
     ensure_not_cancelled()
@@ -208,6 +197,21 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
         )
 
     zap_findings = zap_result.get('findings', []) if zap_result.get('success') else []
+    core_results = {
+        'sslscan': sslscan_result,
+        'nmap': nmap_result,
+        'openssl': openssl_result,
+        'whatweb': whatweb_result,
+        'ssllabs': ssllabs_result,
+    }
+    scanner_errors = {
+        name: result.get('error') or 'Échec sans détail'
+        for name, result in core_results.items()
+        if result.get('success') is False
+    }
+    scan_has_evidence = any(
+        result.get('success') is True for result in core_results.values()
+    )
     score_ia = scorer_rf.calculate_scan_score(
         security_signals=vulnerabilities,
         has_weak_cipher=has_weak_cipher,
@@ -293,8 +297,9 @@ def scan_single_site(target, is_prod=True, has_money=False, options=None, cancel
         existing_cve_ids.add(cve_id)
     return {
         'domaine': target,
-        'success': True,
-        'error': None,
+        'success': scan_has_evidence,
+        'error': None if scan_has_evidence else '; '.join(scanner_errors.values()),
+        'scanner_errors': scanner_errors,
         'score_risque_ia': score_ia,
         'risk_decision': risk_decision,
         'protocols': protocols,

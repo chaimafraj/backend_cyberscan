@@ -7,19 +7,35 @@ import os
 import logging
 import time
 
+from django.conf import settings
+
 from .scan_cancellation import ScanCancelled
 
 logger = logging.getLogger(__name__)
 
-VM_HOST = "192.168.11.131"
-VM_USER = "chaima"
-VM_PASS = "chqi;q123"
-
-
 def get_ssh_client():
+    missing = [
+        name for name in ('SSH_HOST', 'SSH_USER', 'SSH_PASSWORD')
+        if not str(getattr(settings, name, '') or '').strip()
+    ]
+    if missing:
+        raise RuntimeError(f"Configuration SSH incomplete: {', '.join(missing)}")
+
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(VM_HOST, username=VM_USER, password=VM_PASS, timeout=15)
+    ssh.load_system_host_keys()
+    if settings.SSH_AUTO_ADD_HOST_KEY:
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+    ssh.connect(
+        hostname=settings.SSH_HOST,
+        port=settings.SSH_PORT,
+        username=settings.SSH_USER,
+        password=settings.SSH_PASSWORD,
+        timeout=settings.SSH_CONNECT_TIMEOUT,
+        auth_timeout=settings.SSH_CONNECT_TIMEOUT,
+        banner_timeout=settings.SSH_CONNECT_TIMEOUT,
+    )
     return ssh
 
 
@@ -56,9 +72,14 @@ def classify_error(output, target):
     return None
 
 
-def run_sslscan(target, port=None, max_attempts=3):
+def run_sslscan(target, port=None, max_attempts=3, cancel_check=None):
     endpoint = f"{target}:{port}" if port else target
-    command = f"sslscan --connect-timeout=20 --no-colour {shlex.quote(endpoint)}"
+    command_timeout = max(int(settings.SSH_COMMAND_TIMEOUT), 1)
+    command = (
+        f"timeout --signal=TERM --kill-after=5s {command_timeout}s "
+        f"sslscan --ipv4 --timeout=3 --connect-timeout=10 --no-colour "
+        f"{shlex.quote(endpoint)}"
+    )
     last_error = None
     last_raw = ''
 
@@ -66,8 +87,22 @@ def run_sslscan(target, port=None, max_attempts=3):
         ssh = None
         try:
             ssh = get_ssh_client()
-            result, err, _exit_code = _run_ssh_command(ssh, command, timeout=90)
+            result, err, exit_code = _run_ssh_command(
+                ssh,
+                command,
+                timeout=command_timeout + 10,
+                cancel_check=cancel_check,
+            )
             combined = result + err
+            if exit_code == 124:
+                return {
+                    'success': False,
+                    'error': (
+                        f"TIMEOUT: sslscan n'a pas terminé l'analyse de '{target}' "
+                        f"en {command_timeout} secondes"
+                    ),
+                    'raw': combined,
+                }
             error_type = classify_error(combined, target)
             last_raw = combined
             last_error = error_type or ('Aucune réponse du serveur SSL' if not result.strip() else None)
@@ -93,6 +128,8 @@ def run_sslscan(target, port=None, max_attempts=3):
                 'error': 'Erreur SSH: authentification VM échouée',
                 'raw': last_raw,
             }
+        except ScanCancelled:
+            raise
         except Exception as exc:
             last_error = f'Erreur connexion VM: {str(exc)}'
             if attempt == max_attempts:
@@ -489,7 +526,7 @@ def run_zap(target, timeout=600, port=None, cancel_check=None):
         # 1) Vérifier que Docker est disponible sur la VM.
         _, _, docker_code = _run_ssh_command(ssh, "command -v docker", timeout=15)
         if docker_code != 0:
-            logger.error("ZAP: Docker non installé sur la VM %s", VM_HOST)
+            logger.error("ZAP: Docker non installé sur la VM %s", settings.SSH_HOST)
             return {'success': False, 'error': 'Docker non installé sur la VM', 'findings': [], 'raw': ''}
 
         # 2) Préparer un dossier de rapport ACCESSIBLE EN ÉCRITURE par

@@ -172,7 +172,8 @@ class CvePersistenceTests(TestCase):
         for key in (
             "sslscan", "nmap", "openssl", "certificate", "cipher_suites",
             "ports", "ip_address", "network_metadata", "web_server",
-            "scan_duration_seconds", "protocols", "vulnerabilities", "nvd_cves",
+            "scan_duration_seconds", "scanner_errors", "protocols",
+            "vulnerabilities", "nvd_cves",
         ):
             self.assertIn(key, stored)
 
@@ -213,6 +214,46 @@ class ScannerCveEvidenceTests(SimpleTestCase):
             self.assertIn("completed_at", execution)
             self.assertGreaterEqual(execution["duration_seconds"], 0)
             self.assertTrue(execution["success"])
+
+    def test_sslscan_timeout_keeps_partial_scan_when_nmap_succeeds(self):
+        patches = (
+            patch(
+                "scanner.views.run_sslscan",
+                return_value={"success": False, "error": "sslscan timeout", "raw": ""},
+            ),
+            patch(
+                "scanner.views.run_nmap",
+                return_value={"success": True, "error": None, "raw": "443/tcp open https"},
+            ),
+            patch(
+                "scanner.views.run_openssl",
+                return_value={"success": False, "error": "openssl failed", "raw": ""},
+            ),
+            patch(
+                "scanner.views.run_whatweb",
+                return_value={"success": False, "error": "whatweb failed", "technologies": []},
+            ),
+            patch(
+                "scanner.views.run_ssllabs",
+                return_value={"success": False, "error": "ssllabs failed", "grade": "N/A"},
+            ),
+        )
+        started = [item.start() for item in patches]
+        try:
+            from .views import scan_single_site
+            result = scan_single_site(
+                "audit.example",
+                is_prod=False,
+                options={"zap": False, "nvd": False, "network_metadata": False},
+            )
+        finally:
+            for item in reversed(patches):
+                item.stop()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["scanner_errors"]["sslscan"], "sslscan timeout")
+        self.assertFalse(result["tool_executions"]["sslscan"]["success"])
+        self.assertTrue(result["tool_executions"]["nmap"]["success"])
     def test_tls_10_signal_is_not_mislabeled_as_poodle_cve(self):
         result = self.run_scan("TLSv1.0 enabled\nTLSv1.2 enabled")
 
